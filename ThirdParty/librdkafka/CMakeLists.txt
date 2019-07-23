@@ -23,27 +23,29 @@ option(WITH_ZLIB "With ZLIB" ${with_zlib_default})
 # }
 
 # OpenSSL {
-if(WITH_BUNDLED_SSL) # option from 'h2o' parent project
-  set(with_ssl_default ON)
-else()
-  find_package(OpenSSL QUIET)
-  if(OpenSSL_FOUND)
-    set(with_ssl_default ON)
-  else()
-    set(with_ssl_default OFF)
-  endif()
-endif()
+#if(WITH_BUNDLED_SSL) # option from 'h2o' parent project
+#  set(with_ssl_default ON)
+#else()
+#  find_package(OpenSSL QUIET)
+#  if(OpenSSL_FOUND)
+#    set(with_ssl_default ON)
+#  else()
+#    set(with_ssl_default OFF)
+#  endif()
+#endif()
+set(with_ssl_default OFF)
 option(WITH_SSL "With SSL" ${with_ssl_default})
 # }
 
 # SASL {
-include(FindPkgConfig)
-pkg_check_modules(SASL QUIET libsasl2)
-if(SASL_FOUND)
-  set(with_sasl_default ON)
-else()
-  set(with_sasl_default OFF)
-endif()
+#include(FindPkgConfig)
+#pkg_check_modules(SASL QUIET libsasl2)
+#if(SASL_FOUND)
+#  set(with_sasl_default ON)
+#else()
+#  set(with_sasl_default OFF)
+#endif()
+set(with_sasl_default OFF)
 option(WITH_SASL "With SASL" ${with_sasl_default})
 # }
 
@@ -84,46 +86,46 @@ set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # * HAVE_STRNDUP
 configure_file(config.h.in "${GENERATED_DIR}/config.h" @ONLY)
 
-# Installation (https://github.com/forexample/package-example) {
-
-include(GNUInstallDirs)
-
-set(config_install_dir "lib/cmake/${PROJECT_NAME}")
-
-set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
-set(project_config "${generated_dir}/${PROJECT_NAME}Config.cmake")
-set(targets_export_name "${PROJECT_NAME}Targets")
-set(namespace "${PROJECT_NAME}::")
-
-include(CMakePackageConfigHelpers)
-
-# In:
-#   * targets_export_name
-#   * PROJECT_NAME
-configure_package_config_file(
-    "packaging/cmake/Config.cmake.in"
-    "${project_config}"
-    INSTALL_DESTINATION "${config_install_dir}"
-)
-
-install(
-    FILES "${project_config}"
-    DESTINATION "${config_install_dir}"
-)
-
-install(
-    EXPORT "${targets_export_name}"
-    NAMESPACE "${namespace}"
-    DESTINATION "${config_install_dir}"
-)
-
-install(
-    FILES LICENSES.txt
-    DESTINATION "share/licenses/librdkafka"
-)
-
-# }
+# # Installation (https://github.com/forexample/package-example) {
+#
+# include(GNUInstallDirs)
+#
+# set(config_install_dir "lib/cmake/${PROJECT_NAME}")
+#
+# set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+#
+# set(project_config "${generated_dir}/${PROJECT_NAME}Config.cmake")
+# set(targets_export_name "${PROJECT_NAME}Targets")
+# set(namespace "${PROJECT_NAME}::")
+#
+# include(CMakePackageConfigHelpers)
+#
+# # In:
+# #   * targets_export_name
+# #   * PROJECT_NAME
+# configure_package_config_file(
+#     "packaging/cmake/Config.cmake.in"
+#     "${project_config}"
+#     INSTALL_DESTINATION "${config_install_dir}"
+# )
+#
+# install(
+#     FILES "${project_config}"
+#     DESTINATION "${config_install_dir}"
+# )
+#
+# install(
+#     EXPORT "${targets_export_name}"
+#     NAMESPACE "${namespace}"
+#     DESTINATION "${config_install_dir}"
+# )
+#
+# install(
+#     FILES LICENSES.txt
+#     DESTINATION "share/licenses/librdkafka"
+# )
+#
+# # }
 
 add_subdirectory(src)
 add_subdirectory(src-cpp)

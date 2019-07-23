@@ -14,18 +14,21 @@
  * limitations under the License.
  */
 
+import static java.lang.System.out;
+
 import com.mapd.thrift.server.MapD;
 import com.mapd.thrift.server.TDatumType;
 import com.mapd.thrift.server.TQueryResult;
+
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TJSONProtocol;
 import org.apache.thrift.transport.THttpClient;
-import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TSSLTransportFactory;
 import org.apache.thrift.transport.TSSLTransportFactory.TSSLTransportParameters;
+import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
-import static java.lang.System.out;
+
 import java.util.Date;
 
 /*
@@ -43,24 +46,28 @@ Dependencies:
 /httpclient-4.2.3.jar
 
 Compile statement:
-javac -cp /path/to/thrift-0.10.0/lib/java/src:/path/to/slf4j-api-1.7.21.jar:/path/to/thrift/gen-java/:/path/to/httpcore-4.2.3.jar:/path/to/httpclient-4.2.3.jar:. MapDExample.java
+javac -cp
+/path/to/thrift-0.10.0/lib/java/src:/path/to/slf4j-api-1.7.21.jar:/path/to/thrift/gen-java/:/path/to/httpcore-4.2.3.jar:/path/to/httpclient-4.2.3.jar:.
+MapDExample.java
 
 Execution example:
-java -cp /path/to/thrift-0.10.0/lib/java/src:/path/to/slf4j-api-1.7.21.jar:/path/to/gen-java/:/path/to/httpcore-4.2.3.jar:/path/to/httpclient-4.2.3.jar:. MapDExample
+java -cp
+/path/to/thrift-0.10.0/lib/java/src:/path/to/slf4j-api-1.7.21.jar:/path/to/gen-java/:/path/to/httpcore-4.2.3.jar:/path/to/httpclient-4.2.3.jar:.
+MapDExample
 
 Connection samples:
-HTTP client - get_client('http://test.mapd.com:9091', null, true)
-Binary protocol - get_client('locahost', 9091, false)
+HTTP client - get_client('http://test.mapd.com:6274', null, true)
+Binary protocol - get_client('locahost', 6274, false)
 
 */
 
 public class MapDExample {
-  public static void main (String[] args){
+  public static void main(String[] args) {
     String db_name = "mapd";
     String user_name = "mapd";
     String passwd = "HyperInteractive";
-    String hostname = "http://test.mapd.com:9091";
-    int portno = 9091;
+    String hostname = "http://test.mapd.com:6274";
+    int portno = 6274;
     MapD.Client client;
     int session;
     String query;
@@ -70,7 +77,7 @@ public class MapDExample {
     TDatumType fieldType;
     String fieldName, fieldType2;
 
-    try{
+    try {
       client = get_client(hostname, portno, false);
       session = client.connect(user_name, passwd, db_name);
       System.out.println("Connection complete");
@@ -78,7 +85,7 @@ public class MapDExample {
       System.out.println("Query is: " + query);
 
       // always use True for is columnar
-      results = client.sql_execute(session, query, true, null, -1);
+      results = client.sql_execute(session, query, true, null, -1, -1);
 
       if (results.row_set.is_columnar) {
         numRows = results.row_set.columns.get(0).nulls.size();
@@ -91,9 +98,9 @@ public class MapDExample {
             fieldIsArray = results.row_set.row_desc.get(c).col_type.is_array;
             System.out.println(fieldName);
             if (fieldIsArray) {
-              System.out.println(results.row_set.columns.get(c).data.arr_col.get(r).data.str_col);
-            }
-            else {
+              System.out.println(
+                      results.row_set.columns.get(c).data.arr_col.get(r).data.str_col);
+            } else {
               switch (fieldType2) {
                 case "BOOL":
                   break;
@@ -113,7 +120,8 @@ public class MapDExample {
                 case "TIME":
                 case "TIMESTAMP":
                 case "DATE":
-                  System.out.println(new Date(results.row_set.columns.get(c).data.int_col.get(r)*1000));
+                  System.out.println(new Date(
+                          results.row_set.columns.get(c).data.int_col.get(r) * 1000));
                   break;
                 default:
                   break;
@@ -128,10 +136,9 @@ public class MapDExample {
         System.exit(0);
       }
       client.disconnect(session);
-    } catch (Exception x){
+    } catch (Exception x) {
       x.printStackTrace();
     }
-
   }
 
   public static MapD.Client get_client(String host_or_uri, int port, boolean http) {
@@ -142,25 +149,23 @@ public class MapDExample {
     TSocket socket;
     MapD.Client client;
 
-    try{
+    try {
       if (http) {
-         httpTransport = new THttpClient(host_or_uri);
-         jsonProtocol = new TJSONProtocol(httpTransport);
-         client = new MapD.Client(jsonProtocol);
-         httpTransport.open();
-         return client;
+        httpTransport = new THttpClient(host_or_uri);
+        jsonProtocol = new TJSONProtocol(httpTransport);
+        client = new MapD.Client(jsonProtocol);
+        httpTransport.open();
+        return client;
+      } else {
+        transport = new TSocket(host_or_uri, port);
+        protocol = new TBinaryProtocol(transport);
+        client = new MapD.Client(protocol);
+        transport.open();
+        return client;
       }
-      else {
-         transport = new TSocket(host_or_uri, port);
-         protocol = new TBinaryProtocol(transport);
-         client = new MapD.Client(protocol);
-         transport.open();
-         return client;
-       }
-    } catch (TException x){
+    } catch (TException x) {
       x.printStackTrace();
     }
     return null;
   }
-
 }

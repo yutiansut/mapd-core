@@ -26,11 +26,17 @@
 
 #include <boost/algorithm/string.hpp>
 
-#include <glog/logging.h>
-
 using namespace std;
 
-const std::vector<std::string> ParserWrapper::ddl_cmd = {"ALTER", "COPY", "GRANT", "CREATE", "DROP"};
+const std::vector<std::string> ParserWrapper::ddl_cmd = {"ALTER",
+                                                         "COPY",
+                                                         "GRANT",
+                                                         "CREATE",
+                                                         "DROP",
+                                                         "OPTIMIZE",
+                                                         "REVOKE",
+                                                         "SHOW",
+                                                         "TRUNCATE"};
 
 const std::vector<std::string> ParserWrapper::update_dml_cmd = {
     "INSERT",
@@ -41,16 +47,31 @@ const std::vector<std::string> ParserWrapper::update_dml_cmd = {
 
 const std::string ParserWrapper::explain_str = {"explain"};
 const std::string ParserWrapper::calcite_explain_str = {"explain calcite"};
+const std::string ParserWrapper::optimized_explain_str = {"explain optimized"};
+const std::string ParserWrapper::optimize_str = {"optimize"};
+const std::string ParserWrapper::validate_str = {"validate"};
 
 ParserWrapper::ParserWrapper(std::string query_string) {
   if (boost::istarts_with(query_string, calcite_explain_str)) {
     actual_query = boost::trim_copy(query_string.substr(calcite_explain_str.size()));
     ParserWrapper inner{actual_query};
     if (inner.is_ddl || inner.is_update_dml) {
-      is_other_explain = true;
+      explain_type_ = ExplainType::Other;
       return;
     } else {
-      is_select_calcite_explain = true;
+      explain_type_ = ExplainType::Calcite;
+      return;
+    }
+  }
+
+  if (boost::istarts_with(query_string, optimized_explain_str)) {
+    actual_query = boost::trim_copy(query_string.substr(optimized_explain_str.size()));
+    ParserWrapper inner{actual_query};
+    if (inner.is_ddl || inner.is_update_dml) {
+      explain_type_ = ExplainType::Other;
+      return;
+    } else {
+      explain_type_ = ExplainType::OptimizedIR;
       return;
     }
   }
@@ -59,21 +80,38 @@ ParserWrapper::ParserWrapper(std::string query_string) {
     actual_query = boost::trim_copy(query_string.substr(explain_str.size()));
     ParserWrapper inner{actual_query};
     if (inner.is_ddl || inner.is_update_dml) {
-      is_other_explain = true;
+      explain_type_ = ExplainType::Other;
       return;
     } else {
-      is_select_explain = true;
+      explain_type_ = ExplainType::IR;
       return;
     }
+  }
+
+  if (boost::istarts_with(query_string, optimize_str)) {
+    is_optimize = true;
+    return;
+  }
+
+  if (boost::istarts_with(query_string, validate_str)) {
+    is_validate = true;
+    return;
   }
 
   for (std::string ddl : ddl_cmd) {
     is_ddl = boost::istarts_with(query_string, ddl);
     if (is_ddl) {
-      if (ddl == "COPY") {
+      if (ddl == "CREATE") {
+        boost::regex ctas_regex{R"(CREATE\s+TABLE.*AS.*SELECT.*)",
+                                boost::regex::extended | boost::regex::icase};
+        if (boost::regex_match(query_string, ctas_regex)) {
+          is_ctas = true;
+        }
+      } else if (ddl == "COPY") {
         is_copy = true;
         // now check if it is COPY TO
-        boost::regex copy_to{R"(COPY\s*\(([^#])(.+)\)\s+TO\s)", boost::regex::extended | boost::regex::icase};
+        boost::regex copy_to{R"(COPY\s*\(([^#])(.+)\)\s+TO\s+.*)",
+                             boost::regex::extended | boost::regex::icase};
         if (boost::regex_match(query_string, copy_to)) {
           is_copy_to = true;
         }
@@ -82,10 +120,23 @@ ParserWrapper::ParserWrapper(std::string query_string) {
     }
   }
 
-  for (std::string u_dml : update_dml_cmd) {
-    is_update_dml = boost::istarts_with(query_string, u_dml);
+  for (int i = 0; i < update_dml_cmd.size(); i++) {
+    is_update_dml = boost::istarts_with(query_string, ParserWrapper::update_dml_cmd[i]);
     if (is_update_dml) {
-      return;
+      dml_type_ = (DMLType)(i);
+      break;
+    }
+  }
+
+  if (dml_type_ == DMLType::Insert) {
+    boost::regex insert_regex{R"(INSERT\s+INTO.*VALUES\s*\(.*)",
+                              boost::regex::extended | boost::regex::icase};
+    if (!boost::regex_match(query_string, insert_regex)) {
+      boost::regex itas_regex{R"(INSERT\s+INTO.*SELECT.*)",
+                              boost::regex::extended | boost::regex::icase};
+      if (boost::regex_match(query_string, itas_regex)) {
+        is_itas = true;
+      }
     }
   }
 }

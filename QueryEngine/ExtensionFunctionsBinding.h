@@ -27,17 +27,18 @@
 
 #include "ExtensionFunctionsWhitelist.h"
 
+#include "../Analyzer/Analyzer.h"
 #include "../Shared/sqltypes.h"
 
 #include <vector>
 
 namespace Analyzer {
 class FunctionOper;
-}  // Analyzer
+}  // namespace Analyzer
 
-SQLTypeInfo ext_arg_type_to_type_info(const ExtArgumentType ext_arg_type);
+ExtensionFunction bind_function(std::string name,
+                                Analyzer::ExpressionPtrVector func_args);
 
-const ExtensionFunction& bind_function(const Analyzer::FunctionOper* function_oper,
-                                       const std::vector<ExtensionFunction>& ext_func_sigs);
+ExtensionFunction bind_function(const Analyzer::FunctionOper* function_oper);
 
 #endif  // QUERYENGINE_EXTENSIONFUNCTIONSBINDING_H

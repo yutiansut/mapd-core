@@ -43,6 +43,10 @@ class RelAlgVisitor {
     if (join) {
       return aggregateResult(result, visitJoin(join));
     }
+    const auto left_deep_inner_join = dynamic_cast<const RelLeftDeepInnerJoin*>(rel_alg);
+    if (left_deep_inner_join) {
+      return aggregateResult(result, visitLeftDeepInnerJoin(left_deep_inner_join));
+    }
     const auto project = dynamic_cast<const RelProject*>(rel_alg);
     if (project) {
       return aggregateResult(result, visitProject(project));
@@ -54,6 +58,14 @@ class RelAlgVisitor {
     const auto sort = dynamic_cast<const RelSort*>(rel_alg);
     if (sort) {
       return aggregateResult(result, visitSort(sort));
+    }
+    const auto logical_values = dynamic_cast<const RelLogicalValues*>(rel_alg);
+    if (logical_values) {
+      return aggregateResult(result, visitLogicalValues(logical_values));
+    }
+    const auto modify = dynamic_cast<const RelModify*>(rel_alg);
+    if (modify) {
+      return aggregateResult(result, visitModify(modify));
     }
     CHECK(false);
     return defaultResult();
@@ -67,14 +79,24 @@ class RelAlgVisitor {
 
   virtual T visitJoin(const RelJoin*) const { return defaultResult(); }
 
+  virtual T visitLeftDeepInnerJoin(const RelLeftDeepInnerJoin*) const {
+    return defaultResult();
+  }
+
   virtual T visitProject(const RelProject*) const { return defaultResult(); }
 
   virtual T visitScan(const RelScan*) const { return defaultResult(); }
 
   virtual T visitSort(const RelSort*) const { return defaultResult(); }
 
+  virtual T visitLogicalValues(const RelLogicalValues*) const { return defaultResult(); }
+
+  virtual T visitModify(const RelModify*) const { return defaultResult(); }
+
  protected:
-  virtual T aggregateResult(const T& aggregate, const T& next_result) const { return next_result; }
+  virtual T aggregateResult(const T& aggregate, const T& next_result) const {
+    return next_result;
+  }
 
   virtual T defaultResult() const { return T{}; }
 };

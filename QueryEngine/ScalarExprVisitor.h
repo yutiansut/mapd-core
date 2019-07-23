@@ -32,9 +32,9 @@ class ScalarExprVisitor {
     if (column_var) {
       return visitColumnVar(column_var);
     }
-    const auto iter = dynamic_cast<const Analyzer::IterExpr*>(expr);
-    if (iter) {
-      return visitIterator(iter);
+    const auto column_var_tuple = dynamic_cast<const Analyzer::ExpressionTuple*>(expr);
+    if (column_var_tuple) {
+      return visitColumnVarTuple(column_var_tuple);
     }
     const auto constant = dynamic_cast<const Analyzer::Constant*>(expr);
     if (constant) {
@@ -60,6 +60,14 @@ class ScalarExprVisitor {
     if (char_length) {
       return visitCharLength(char_length);
     }
+    const auto key_for_string = dynamic_cast<const Analyzer::KeyForStringExpr*>(expr);
+    if (key_for_string) {
+      return visitKeyForString(key_for_string);
+    }
+    const auto cardinality = dynamic_cast<const Analyzer::CardinalityExpr*>(expr);
+    if (cardinality) {
+      return visitCardinality(cardinality);
+    }
     const auto like_expr = dynamic_cast<const Analyzer::LikeExpr*>(expr);
     if (like_expr) {
       return visitLikeExpr(like_expr);
@@ -80,7 +88,12 @@ class ScalarExprVisitor {
     if (extract) {
       return visitExtractExpr(extract);
     }
-    const auto func_with_custom_type_handling = dynamic_cast<const Analyzer::FunctionOperWithCustomTypeHandling*>(expr);
+    const auto window_func = dynamic_cast<const Analyzer::WindowFunction*>(expr);
+    if (window_func) {
+      return visitWindowFunction(window_func);
+    }
+    const auto func_with_custom_type_handling =
+        dynamic_cast<const Analyzer::FunctionOperWithCustomTypeHandling*>(expr);
     if (func_with_custom_type_handling) {
       return visitFunctionOperWithCustomTypeHandling(func_with_custom_type_handling);
     }
@@ -88,13 +101,25 @@ class ScalarExprVisitor {
     if (func) {
       return visitFunctionOper(func);
     }
+    const auto array = dynamic_cast<const Analyzer::ArrayExpr*>(expr);
+    if (array) {
+      return visitArrayOper(array);
+    }
     const auto datediff = dynamic_cast<const Analyzer::DatediffExpr*>(expr);
     if (datediff) {
       return visitDatediffExpr(datediff);
     }
+    const auto dateadd = dynamic_cast<const Analyzer::DateaddExpr*>(expr);
+    if (dateadd) {
+      return visitDateaddExpr(dateadd);
+    }
     const auto likelihood = dynamic_cast<const Analyzer::LikelihoodExpr*>(expr);
     if (likelihood) {
       return visitLikelihood(likelihood);
+    }
+    const auto offset_in_fragment = dynamic_cast<const Analyzer::OffsetInFragment*>(expr);
+    if (offset_in_fragment) {
+      return visitOffsetInFragment(offset_in_fragment);
     }
     const auto agg = dynamic_cast<const Analyzer::AggExpr*>(expr);
     if (agg) {
@@ -108,7 +133,9 @@ class ScalarExprVisitor {
 
   virtual T visitColumnVar(const Analyzer::ColumnVar*) const { return defaultResult(); }
 
-  virtual T visitIterator(const Analyzer::IterExpr*) const { return defaultResult(); }
+  virtual T visitColumnVarTuple(const Analyzer::ExpressionTuple*) const {
+    return defaultResult();
+  }
 
   virtual T visitConstant(const Analyzer::Constant*) const { return defaultResult(); }
 
@@ -141,6 +168,18 @@ class ScalarExprVisitor {
   virtual T visitCharLength(const Analyzer::CharLengthExpr* char_length) const {
     T result = defaultResult();
     result = aggregateResult(result, visit(char_length->get_arg()));
+    return result;
+  }
+
+  virtual T visitKeyForString(const Analyzer::KeyForStringExpr* key_for_string) const {
+    T result = defaultResult();
+    result = aggregateResult(result, visit(key_for_string->get_arg()));
+    return result;
+  }
+
+  virtual T visitCardinality(const Analyzer::CardinalityExpr* cardinality) const {
+    T result = defaultResult();
+    result = aggregateResult(result, visit(cardinality->get_arg()));
     return result;
   }
 
@@ -192,10 +231,32 @@ class ScalarExprVisitor {
     return visitFunctionOper(func_oper);
   }
 
+  virtual T visitArrayOper(Analyzer::ArrayExpr const* array_expr) const {
+    T result = defaultResult();
+    for (size_t i = 0; i < array_expr->getElementCount(); ++i) {
+      result = aggregateResult(result, visit(array_expr->getElement(i)));
+    }
+    return result;
+  }
+
   virtual T visitFunctionOper(const Analyzer::FunctionOper* func_oper) const {
     T result = defaultResult();
     for (size_t i = 0; i < func_oper->getArity(); ++i) {
       result = aggregateResult(result, visit(func_oper->getArg(i)));
+    }
+    return result;
+  }
+
+  virtual T visitWindowFunction(const Analyzer::WindowFunction* window_func) const {
+    T result = defaultResult();
+    for (const auto& arg : window_func->getArgs()) {
+      result = aggregateResult(result, visit(arg.get()));
+    }
+    for (const auto& partition_key : window_func->getPartitionKeys()) {
+      result = aggregateResult(result, visit(partition_key.get()));
+    }
+    for (const auto& order_key : window_func->getOrderKeys()) {
+      result = aggregateResult(result, visit(order_key.get()));
     }
     return result;
   }
@@ -207,7 +268,20 @@ class ScalarExprVisitor {
     return result;
   }
 
-  virtual T visitLikelihood(const Analyzer::LikelihoodExpr* likelihood) const { return visit(likelihood->get_arg()); }
+  virtual T visitDateaddExpr(const Analyzer::DateaddExpr* dateadd) const {
+    T result = defaultResult();
+    result = aggregateResult(result, visit(dateadd->get_number_expr()));
+    result = aggregateResult(result, visit(dateadd->get_datetime_expr()));
+    return result;
+  }
+
+  virtual T visitLikelihood(const Analyzer::LikelihoodExpr* likelihood) const {
+    return visit(likelihood->get_arg());
+  }
+
+  virtual T visitOffsetInFragment(const Analyzer::OffsetInFragment*) const {
+    return defaultResult();
+  }
 
   virtual T visitAggExpr(const Analyzer::AggExpr* agg) const {
     T result = defaultResult();
@@ -215,7 +289,9 @@ class ScalarExprVisitor {
   }
 
  protected:
-  virtual T aggregateResult(const T& aggregate, const T& next_result) const { return next_result; }
+  virtual T aggregateResult(const T& aggregate, const T& next_result) const {
+    return next_result;
+  }
 
   virtual T defaultResult() const { return T{}; }
 };

@@ -17,15 +17,18 @@
 #ifndef QUERYENGINE_COMPILATIONOPTIONS_H
 #define QUERYENGINE_COMPILATIONOPTIONS_H
 
-enum class ExecutorDeviceType { CPU, GPU, Hybrid };
+enum class ExecutorDeviceType { CPU, GPU };
 
 enum class ExecutorOptLevel { Default, LoopStrengthReduction };
+
+enum class ExecutorExplainType { Default, Optimized };
 
 struct CompilationOptions {
   ExecutorDeviceType device_type_;
   const bool hoist_literals_;
   const ExecutorOptLevel opt_level_;
   const bool with_dynamic_watchdog_;
+  const ExecutorExplainType explain_type_{ExecutorExplainType::Default};
 };
 
 struct ExecutionOptions {
@@ -36,8 +39,12 @@ struct ExecutionOptions {
   const bool with_watchdog;  // Per work unit, not global.
   const bool jit_debug;
   const bool just_validate;
-  const bool with_dynamic_watchdog;            // Per work unit, not global.
-  const unsigned dynamic_watchdog_time_limit;  // Dynamic watchdog time limit, in milliseconds.
+  const bool with_dynamic_watchdog;  // Per work unit, not global.
+  const unsigned
+      dynamic_watchdog_time_limit;  // Dynamic watchdog time limit, in milliseconds.
+  const bool find_push_down_candidates;
+  const bool just_calcite_explain;
+  const double gpu_input_mem_limit_percent;  // punt to CPU if input memory exceeds this
 };
 
 #endif  // QUERYENGINE_COMPILATIONOPTIONS_H

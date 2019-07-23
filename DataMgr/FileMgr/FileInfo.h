@@ -17,14 +17,16 @@
 #ifndef FILEINFO_H
 #define FILEINFO_H
 
-#include "../../Shared/types.h"
-#include "Page.h"
+#include <fcntl.h>
+#include <unistd.h>
 #include <cstdio>
+#include <cstring>
+#include <mutex>
 #include <set>
 #include <vector>
-#include <mutex>
-#include <unistd.h>
-#include <fcntl.h>
+#include "../../Shared/types.h"
+#include "Page.h"
+#include "Shared/Logger.h"
 
 namespace File_Namespace {
 
@@ -37,25 +39,35 @@ struct Page;
  * A file info structure wraps around a file pointer in order to contain additional
  * information/metadata about the file that is pertinent to the file manager.
  *
- * The free pages (freePages) within a file must be tracked, and this is implemented using a
- * basic STL set. The set ensures that no duplicate pages are included, and that the pages
- * are sorted, faciliating the obtaining of consecutive free pages by a constant time
- * pop operation, which may reduce the cost of DBMS disk accesses.
+ * The free pages (freePages) within a file must be tracked, and this is implemented using
+ * a basic STL set. The set ensures that no duplicate pages are included, and that the
+ * pages are sorted, faciliating the obtaining of consecutive free pages by a constant
+ * time pop operation, which may reduce the cost of DBMS disk accesses.
  *
  * Helper functions are provided: size(), available(), and used().
  */
+#define DELETE_CONTINGENT (-1)
+
+class FileMgr;
 struct FileInfo {
+  FileMgr* fileMgr;
   int fileId;       /// unique file identifier (i.e., used for a file name)
   FILE* f;          /// file stream object for the represented file
   size_t pageSize;  /// the fixed size of each page in the file
   size_t numPages;  /// the number of pages in the file
-  // std::vector<Page*> pages;			/// Page pointers for each page (including free pages)
+  // std::vector<Page*> pages;			/// Page pointers for each page (including
+  // free pages)
   std::set<size_t> freePages;  /// set of page numbers of free pages
   std::mutex freePagesMutex_;
   std::mutex readWriteMutex_;
 
   /// Constructor
-  FileInfo(const int fileId, FILE* f, const size_t pageSize, const size_t numPages, const bool init = false);
+  FileInfo(FileMgr* fileMgr,
+           const int fileId,
+           FILE* f,
+           const size_t pageSize,
+           const size_t numPages,
+           const bool init = false);
 
   /// Destructor
   ~FileInfo();
@@ -64,6 +76,7 @@ struct FileInfo {
   // for each apge
   void initNewFile();
 
+  void freePageDeferred(int pageId);
   void freePage(int pageId);
   int getFreePage();
   size_t write(const size_t offset, const size_t size, int8_t* buf);
@@ -77,7 +90,10 @@ struct FileInfo {
   inline size_t size() { return pageSize * numPages; }
 
   inline int syncToDisk() {
-    fflush(f);
+    if (fflush(f) != 0) {
+      LOG(FATAL) << "Error trying to flush changes to disk, the error was: "
+                 << std::strerror(errno);
+    }
 #ifdef __APPLE__
     return fcntl(fileno(f), 51);
 #else
@@ -97,6 +113,6 @@ struct FileInfo {
   /// Returns the amount of used bytes; size() - available()
   inline size_t used() { return size() - available(); }
 };
-}  // File_Namespace
+}  // namespace File_Namespace
 
 #endif  // kkkkk

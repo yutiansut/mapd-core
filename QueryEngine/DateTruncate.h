@@ -17,9 +17,9 @@
 #ifndef QUERYENGINE_DATETRUNCATE_H
 #define QUERYENGINE_DATETRUNCATE_H
 
-#include <stdint.h>
-#include <time.h>
+#include <cstdint>
 
+#include "../Shared/funcannotations.h"
 #include "ExtractFromTime.h"
 
 /*
@@ -35,6 +35,7 @@
  * decade
  * milliseconds
  * microseconds
+ * nanoseconds
  * week
  * quarterday
  */
@@ -51,16 +52,22 @@ enum DatetruncField {
   dtDECADE,
   dtMILLISECOND,
   dtMICROSECOND,
+  dtNANOSECOND,
   dtWEEK,
   dtQUARTERDAY,
   dtINVALID
 };
 
-extern "C" __attribute__((noinline))
-#ifdef __CUDACC__
-__device__
-#endif
-    time_t
-    DateTruncate(DatetruncField field, time_t timeval);
+extern "C" NEVER_INLINE DEVICE int64_t DateTruncate(DatetruncField field,
+                                                    const int64_t timeval);
+
+extern "C" DEVICE int64_t DateTruncateHighPrecisionToDate(const int64_t timeval,
+                                                          const int64_t scale);
+
+extern "C" DEVICE int64_t DateTruncateAlterPrecisionScaleUp(const int64_t timeval,
+                                                            const int64_t scale);
+
+extern "C" DEVICE int64_t DateTruncateAlterPrecisionScaleDown(const int64_t timeval,
+                                                              const int64_t scale);
 
 #endif  // QUERYENGINE_DATETRUNCATE_H

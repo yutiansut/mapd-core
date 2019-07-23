@@ -15,25 +15,15 @@
  */
 
 #include "DateTimePlusRewrite.h"
+#include "Execute.h"
 
 #include "../Analyzer/Analyzer.h"
 #include "../Parser/ParserNode.h"
+#include "Shared/Logger.h"
 
-#include <glog/logging.h>
+#include "DateTimeTranslator.h"
 
 namespace {
-
-const Analyzer::Expr* remove_cast_to_int(const Analyzer::Expr* expr) {
-  const auto uoper = dynamic_cast<const Analyzer::UOper*>(expr);
-  if (!uoper || uoper->get_optype() != kCAST) {
-    return nullptr;
-  }
-  const auto& target_ti = uoper->get_type_info();
-  if (!target_ti.is_integer()) {
-    return nullptr;
-  }
-  return uoper->get_operand();
-}
 
 const Analyzer::Expr* remove_truncate_int(const Analyzer::Expr* expr) {
   if (!expr) {
@@ -60,6 +50,8 @@ bool match_const_integer(const Analyzer::Expr* expr, const int64_t v) {
   }
   const auto& datum = const_expr->get_constval();
   switch (const_ti.get_type()) {
+    case kTINYINT:
+      return v == datum.tinyintval;
     case kSMALLINT:
       return v == datum.smallintval;
     case kINT:
@@ -72,26 +64,36 @@ bool match_const_integer(const Analyzer::Expr* expr, const int64_t v) {
   return false;
 }
 
-DatetruncField get_dt_field(const Analyzer::Expr* ts, const Analyzer::Expr* interval_multiplier, const bool dt_hour) {
+DatetruncField get_dt_field(const Analyzer::Expr* ts,
+                            const Analyzer::Expr* interval_multiplier,
+                            const bool dt_hour) {
   if (dt_hour) {
-    const auto extract_fn = dynamic_cast<const Analyzer::ExtractExpr*>(interval_multiplier);
-    return (extract_fn && extract_fn->get_field() == kHOUR && *extract_fn->get_from_expr() == *ts) ? dtHOUR : dtINVALID;
+    const auto extract_fn =
+        dynamic_cast<const Analyzer::ExtractExpr*>(interval_multiplier);
+    return (extract_fn && extract_fn->get_field() == kHOUR &&
+            *extract_fn->get_from_expr() == *ts)
+               ? dtHOUR
+               : dtINVALID;
   }
-  const auto interval_multiplier_fn = remove_truncate_int(remove_cast_to_int(interval_multiplier));
+  const auto interval_multiplier_fn =
+      remove_truncate_int(remove_cast_to_int(interval_multiplier));
   if (!interval_multiplier_fn) {
     return dtINVALID;
   }
-  const auto interval_multiplier_mul = dynamic_cast<const Analyzer::BinOper*>(interval_multiplier_fn);
+  const auto interval_multiplier_mul =
+      dynamic_cast<const Analyzer::BinOper*>(interval_multiplier_fn);
   if (!interval_multiplier_mul || interval_multiplier_mul->get_optype() != kMULTIPLY ||
       !match_const_integer(interval_multiplier_mul->get_left_operand(), -1)) {
     return dtINVALID;
   }
-  const auto extract_minus_one = dynamic_cast<const Analyzer::BinOper*>(interval_multiplier_mul->get_right_operand());
+  const auto extract_minus_one = dynamic_cast<const Analyzer::BinOper*>(
+      interval_multiplier_mul->get_right_operand());
   if (!extract_minus_one || extract_minus_one->get_optype() != kMINUS ||
       !match_const_integer(extract_minus_one->get_right_operand(), 1)) {
     return dtINVALID;
   }
-  const auto extract_fn = dynamic_cast<const Analyzer::ExtractExpr*>(extract_minus_one->get_left_operand());
+  const auto extract_fn =
+      dynamic_cast<const Analyzer::ExtractExpr*>(extract_minus_one->get_left_operand());
   if (!extract_fn || !(*extract_fn->get_from_expr() == *ts)) {
     return dtINVALID;
   }
@@ -111,10 +113,12 @@ DatetruncField get_dt_field(const Analyzer::Expr* ts, const Analyzer::Expr* off_
   if (!mul_by_interval) {
     return dtINVALID;
   }
-  auto interval = dynamic_cast<const Analyzer::Constant*>(mul_by_interval->get_right_operand());
+  auto interval =
+      dynamic_cast<const Analyzer::Constant*>(mul_by_interval->get_right_operand());
   auto interval_multiplier = mul_by_interval->get_left_operand();
   if (!interval) {
-    interval = dynamic_cast<const Analyzer::Constant*>(mul_by_interval->get_left_operand());
+    interval =
+        dynamic_cast<const Analyzer::Constant*>(mul_by_interval->get_left_operand());
     if (!interval) {
       return dtINVALID;
     }
@@ -125,7 +129,7 @@ DatetruncField get_dt_field(const Analyzer::Expr* ts, const Analyzer::Expr* off_
     return dtINVALID;
   }
   const auto& datum = interval->get_constval();
-  switch (datum.timeval) {
+  switch (datum.bigintval) {
     case 86400000:
       return get_dt_field(ts, interval_multiplier, false);
     case 3600000:
@@ -154,7 +158,8 @@ std::shared_ptr<Analyzer::Expr> remove_cast_to_date(const Analyzer::Expr* expr) 
 
 }  // namespace
 
-std::shared_ptr<Analyzer::Expr> rewrite_to_date_trunc(const Analyzer::FunctionOper* dt_plus) {
+std::shared_ptr<Analyzer::Expr> rewrite_to_date_trunc(
+    const Analyzer::FunctionOper* dt_plus) {
   CHECK_EQ("DATETIME_PLUS", dt_plus->getName());
   CHECK_EQ(size_t(2), dt_plus->getArity());
   const auto ts = remove_cast_to_date(dt_plus->getArg(0));
@@ -166,5 +171,5 @@ std::shared_ptr<Analyzer::Expr> rewrite_to_date_trunc(const Analyzer::FunctionOp
   if (dt_field == dtINVALID) {
     return nullptr;
   }
-  return Parser::DatetruncExpr::get(ts, dt_field);
+  return DateTruncExpr::generate(ts, dt_field);
 }

@@ -26,22 +26,23 @@
 #ifndef QUERYENGINE_RELALGEXECUTIONUNIT_H
 #define QUERYENGINE_RELALGEXECUTIONUNIT_H
 
-#include "InputDescriptors.h"
 #include "../Shared/sqldefs.h"
+#include "Descriptors/InputDescriptors.h"
+#include "QueryFeatures.h"
 
 #include <list>
 #include <memory>
 #include <vector>
 
-enum class SortAlgorithm { Default, SpeculativeTopN };
+enum class SortAlgorithm { Default, SpeculativeTopN, StreamingTopN };
 
 namespace Analyzer {
 
 class Expr;
-class NDVEstimator;
+class Estimator;
 struct OrderEntry;
 
-}  // Analyzer
+}  // namespace Analyzer
 
 struct SortInfo {
   const std::list<Analyzer::OrderEntry> order_entries;
@@ -50,22 +51,28 @@ struct SortInfo {
   const size_t offset;
 };
 
+struct JoinCondition {
+  std::list<std::shared_ptr<Analyzer::Expr>> quals;
+  JoinType type;
+};
+
+using JoinQualsPerNestingLevel = std::vector<JoinCondition>;
+
 struct RelAlgExecutionUnit {
   const std::vector<InputDescriptor> input_descs;
-  const std::vector<InputDescriptor> extra_input_descs;
-  const std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
-  const std::list<std::shared_ptr<Analyzer::Expr>> simple_quals;
-  const std::list<std::shared_ptr<Analyzer::Expr>> quals;
-  const JoinType join_type;
-  const std::vector<std::pair<int, size_t>> join_dimensions;
-  const std::list<std::shared_ptr<Analyzer::Expr>> inner_join_quals;
-  const std::list<std::shared_ptr<Analyzer::Expr>> outer_join_quals;
+  std::list<std::shared_ptr<const InputColDescriptor>> input_col_descs;
+  std::list<std::shared_ptr<Analyzer::Expr>> simple_quals;
+  std::list<std::shared_ptr<Analyzer::Expr>> quals;
+  const JoinQualsPerNestingLevel join_quals;
   const std::list<std::shared_ptr<Analyzer::Expr>> groupby_exprs;
   std::vector<Analyzer::Expr*> target_exprs;
-  const std::vector<Analyzer::Expr*> orig_target_exprs;
-  const std::shared_ptr<Analyzer::NDVEstimator> estimator;
+  const std::shared_ptr<Analyzer::Estimator> estimator;
   const SortInfo sort_info;
   size_t scan_limit;
+  QueryFeatureDescriptor query_features;
 };
+
+class ResultSet;
+using ResultSetPtr = std::shared_ptr<ResultSet>;
 
 #endif  // QUERYENGINE_RELALGEXECUTIONUNIT_H

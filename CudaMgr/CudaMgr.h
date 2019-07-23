@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 MapD Technologies, Inc.
+ * Copyright 2018 OmniSci, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,37 @@
 #define CUDAMGR_H
 
 #include <cstdlib>
+#include <mutex>
+#include <string>
 #include <vector>
 #ifdef HAVE_CUDA
 #include <cuda.h>
+#include <cuda_runtime.h>
 #else
 #include "../Shared/nocuda.h"
 #endif  // HAVE_CUDA
 
 namespace CudaMgr_Namespace {
+
+#ifdef HAVE_CUDA
+class CudaErrorException : public std::runtime_error {
+ public:
+  CudaErrorException(CUresult status)
+      : std::runtime_error(processStatus(status)), status_(status) {}
+
+  CUresult getStatus() const { return status_; }
+
+ private:
+  CUresult status_;
+  std::string processStatus(CUresult status) {
+    const char* errorString{nullptr};
+    cuGetErrorString(status, &errorString);
+    return errorString
+               ? "CUDA Error: " + std::string(errorString)
+               : std::string("CUDA Driver API error code ") + std::to_string(status);
+  }
+};
+#endif
 
 struct DeviceProperties {
   CUdevice device;
@@ -34,6 +57,7 @@ struct DeviceProperties {
   size_t globalMem;
   int constantMem;
   int sharedMemPerBlock;
+  int sharedMemPerMP;
   int numMPs;
   int warpSize;
   int maxThreadsPerBlock;
@@ -45,45 +69,107 @@ struct DeviceProperties {
   int memoryBusWidth;  // in bits
   float memoryBandwidthGBs;
   int clockKhz;
+  int numCore;
+  std::string arch;
 };
 
 class CudaMgr {
  public:
-  CudaMgr(const int numGpus, const int startGpu = 0);
+  CudaMgr(const int num_gpus, const int start_gpu = 0);
   ~CudaMgr();
-  void setContext(const int deviceNum) const;
-  void printDeviceProperties() const;
-  int8_t* allocatePinnedHostMem(const size_t numBytes);
-  int8_t* allocateDeviceMem(const size_t numBytes, const int deviceNum);
-  void freePinnedHostMem(int8_t* hostPtr);
-  void freeDeviceMem(int8_t* devicePtr);
-  void copyHostToDevice(int8_t* devicePtr, const int8_t* hostPtr, const size_t numBytes, const int deviceNum);
-  void copyDeviceToHost(int8_t* hostPtr, const int8_t* devicePtr, const size_t numBytes, const int deviceNum);
-  void copyDeviceToDevice(int8_t* destPtr,
-                          int8_t* srcPtr,
-                          const size_t numBytes,
-                          const int destDeviceNum,
-                          const int srcDeviceNum);
-  void zeroDeviceMem(int8_t* devicePtr, const size_t numBytes, const int deviceNum);
-  inline int getDeviceCount() const { return deviceCount_; }
-  inline bool isArchMaxwell() const { return (getDeviceCount() > 0 && deviceProperties[0].computeMajor == 5); }
-  inline bool isArchPascal() const { return (getDeviceCount() > 0 && deviceProperties[0].computeMajor == 6); }
-  std::vector<DeviceProperties> deviceProperties;
 
-  const std::vector<CUcontext>& getDeviceContexts() const { return deviceContexts; }
+  void synchronizeDevices() const;
+  int getDeviceCount() const { return device_count_; }
+
+  void copyHostToDevice(int8_t* device_ptr,
+                        const int8_t* host_ptr,
+                        const size_t num_bytes,
+                        const int device_num);
+  void copyDeviceToHost(int8_t* host_ptr,
+                        const int8_t* device_ptr,
+                        const size_t num_bytes,
+                        const int device_num);
+  void copyDeviceToDevice(int8_t* dest_ptr,
+                          int8_t* src_ptr,
+                          const size_t num_bytes,
+                          const int dest_device_num,
+                          const int src_device_num);
+
+  int8_t* allocatePinnedHostMem(const size_t num_bytes);
+  int8_t* allocateDeviceMem(const size_t num_bytes, const int device_num);
+  void freePinnedHostMem(int8_t* host_ptr);
+  void freeDeviceMem(int8_t* device_ptr);
+  void zeroDeviceMem(int8_t* device_ptr, const size_t num_bytes, const int device_num);
+  void setDeviceMem(int8_t* device_ptr,
+                    const unsigned char uc,
+                    const size_t num_bytes,
+                    const int device_num);
+
+  int getStartGpu() const { return start_gpu_; }
+  size_t getMaxSharedMemoryForAll() const { return max_shared_memory_for_all_; }
+
+  const std::vector<DeviceProperties>& getAllDeviceProperties() const {
+    return device_properties_;
+  }
+  const DeviceProperties* getDeviceProperties(const size_t device_num) const {
+    // device_num is the device number relative to start_gpu_ (real_device_num -
+    // start_gpu_)
+    if (device_num < device_properties_.size()) {
+      return &device_properties_[device_num];
+    }
+    throw std::runtime_error("Specified device number " + std::to_string(device_num) +
+                             " is out of range of number of devices (" +
+                             std::to_string(device_properties_.size()) + ")");
+  }
+  inline bool isArchMaxwell() const {
+    return (getDeviceCount() > 0 && device_properties_[0].computeMajor == 5);
+  }
+  inline bool isArchMaxwellOrLater() const {
+    return (getDeviceCount() > 0 && device_properties_[0].computeMajor >= 5);
+  }
+  inline bool isArchPascal() const {
+    return (getDeviceCount() > 0 && device_properties_[0].computeMajor == 6);
+  }
+  inline bool isArchPascalOrLater() const {
+    return (getDeviceCount() > 0 && device_properties_[0].computeMajor >= 6);
+  }
+  bool isArchMaxwellOrLaterForAll() const;
+  bool isArchVoltaForAll() const;
+
+  void setContext(const int device_num) const;
+
+#ifdef HAVE_CUDA
+  void printDeviceProperties() const;
+
+  const std::vector<CUcontext>& getDeviceContexts() const { return device_contexts_; }
+  const int getGpuDriverVersion() const { return gpu_driver_version_; }
+
+  void loadGpuModuleData(CUmodule* module,
+                         const void* image,
+                         unsigned int num_options,
+                         CUjit_option* options,
+                         void** option_values,
+                         const int device_id) const;
+  void unloadGpuModuleData(CUmodule* module, const int device_id) const;
+#endif
 
  private:
+#ifdef HAVE_CUDA
   void fillDeviceProperties();
   void createDeviceContexts();
-  void checkError(CUresult cuResult);
+  size_t computeMaxSharedMemoryForAll() const;
+  void checkError(CUresult cu_result) const;
+#endif
 
-  int deviceCount_;
-#ifdef HAVE_CUDA
-  int startGpu_;
-#endif  // HAVE_CUDA
-  std::vector<CUcontext> deviceContexts;
+  int device_count_;
+  int gpu_driver_version_;
+  int start_gpu_;
+  size_t max_shared_memory_for_all_;
+  std::vector<DeviceProperties> device_properties_;
+  std::vector<CUcontext> device_contexts_;
 
-};  // class CudaMgr
+  mutable std::mutex device_cleanup_mutex_;
+};
 
 }  // Namespace CudaMgr_Namespace
 

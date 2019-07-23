@@ -27,7 +27,7 @@
 
 #include "../Shared/funcannotations.h"
 
-#include <stdint.h>
+#include <cstdint>
 
 /*
  * @brief regexp_like performs the SQL REGEXP operation
@@ -39,6 +39,10 @@
  * @return true if str matches pattern, false otherwise.
  */
 
-extern "C" DEVICE bool regexp_like(const char* str, int str_len, const char* pattern, int pat_len, char escape_char);
+extern "C" DEVICE bool regexp_like(const char* str,
+                                   int str_len,
+                                   const char* pattern,
+                                   int pat_len,
+                                   char escape_char);
 
 #endif  // REGEX_H

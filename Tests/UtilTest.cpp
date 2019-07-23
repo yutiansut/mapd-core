@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
-#include "../Utils/StringLike.h"
 #include "../Utils/Regexp.h"
-#include "gtest/gtest.h"
+#include "../Utils/StringLike.h"
+#include "TestHelpers.h"
+
+#include <gtest/gtest.h>
 
 TEST(Utils, StringLike) {
   ASSERT_TRUE(string_like("abc", 3, "abc", 3, '\\'));
@@ -44,6 +46,14 @@ TEST(Utils, Regexp) {
 }
 
 int main(int argc, char* argv[]) {
+  TestHelpers::init_logger_stderr_only(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+
+  int err{0};
+  try {
+    err = RUN_ALL_TESTS();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+  }
+  return err;
 }

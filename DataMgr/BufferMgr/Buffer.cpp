@@ -25,10 +25,10 @@
 //
 #include <cassert>
 #include <stdexcept>
-#include <glog/logging.h>
 
 #include "Buffer.h"
 #include "BufferMgr.h"
+#include "Shared/Logger.h"
 
 namespace Buffer_Namespace {
 
@@ -37,7 +37,13 @@ Buffer::Buffer(BufferMgr* bm,
                const int deviceId,
                const size_t pageSize,
                const size_t numBytes)
-    : AbstractBuffer(deviceId), mem_(0), bm_(bm), segIt_(segIt), pageSize_(pageSize), numPages_(0), pinCount_(0) {
+    : AbstractBuffer(deviceId)
+    , mem_(0)
+    , bm_(bm)
+    , segIt_(segIt)
+    , pageSize_(pageSize)
+    , numPages_(0)
+    , pinCount_(0) {
   pin();
   // so that the pointer value of this Buffer is stored
   segIt_->buffer = this;
@@ -47,8 +53,8 @@ Buffer::Buffer(BufferMgr* bm,
 }
 
 /*
- Buffer::Buffer(const int8_t * mem, const size_t numPages, const size_t pageSize, const int epoch):
-  mem_(mem), pageSize_(pageSize), used_(0), epoch_(epoch), dirty_(false)
+ Buffer::Buffer(const int8_t * mem, const size_t numPages, const size_t pageSize, const
+ int epoch): mem_(mem), pageSize_(pageSize), used_(0), epoch_(epoch), dirty_(false)
  {
      assert(pageSize_ > 0);
      pageDirtyFlags_.resize(numPages);
@@ -67,9 +73,14 @@ void Buffer::reserve(const size_t numBytes) {
   size_t numPages = (numBytes + pageSize_ - 1) / pageSize_;
   // std::cout << "NumPages reserved: " << numPages << std::endl;
   if (numPages > numPages_) {
+    // When running out of cpu buffers, reserveBuffer() will fail and
+    // trigger a SlabTooBig exception, so pageDirtyFlags_ and numPages_
+    // MUST NOT be set until reserveBuffer() returns; otherwise, this
+    // buffer is not properly resized, so any call to FileMgr::fetchBuffer()
+    // will proceed to read(), corrupt heap memory and cause core dump later.
+    segIt_ = bm_->reserveBuffer(segIt_, pageSize_ * numPages);
     pageDirtyFlags_.resize(numPages);
     numPages_ = numPages;
-    segIt_ = bm_->reserveBuffer(segIt_, reservedSize());
   }
 }
 
@@ -78,6 +89,9 @@ void Buffer::read(int8_t* const dst,
                   const size_t offset,
                   const MemoryLevel dstBufferType,
                   const int dstDeviceId) {
+  if (numBytes == 0) {
+    return;
+  }
   assert(dst && mem_);
 #ifdef BUFFER_MUTEX
   boost::shared_lock<boost::shared_mutex> readLock(readWriteMutex_);
@@ -122,10 +136,15 @@ void Buffer::write(int8_t* src,
   }
 }
 
-void Buffer::append(int8_t* src, const size_t numBytes, const MemoryLevel srcBufferType, const int srcDeviceId) {
+void Buffer::append(int8_t* src,
+                    const size_t numBytes,
+                    const MemoryLevel srcBufferType,
+                    const int srcDeviceId) {
 #ifdef BUFFER_MUTEX
-  boost::shared_lock<boost::shared_mutex> readLock(readWriteMutex_);  // keep another thread from getting a write lock
-  boost::unique_lock<boost::shared_mutex> appendLock(appendMutex_);   // keep another thread from getting an append lock
+  boost::shared_lock<boost::shared_mutex> readLock(
+      readWriteMutex_);  // keep another thread from getting a write lock
+  boost::unique_lock<boost::shared_mutex> appendLock(
+      appendMutex_);  // keep another thread from getting an append lock
 #endif
 
   isDirty_ = true;
@@ -143,4 +162,4 @@ void Buffer::append(int8_t* src, const size_t numBytes, const MemoryLevel srcBuf
 int8_t* Buffer::getMemoryPtr() {
   return mem_;
 }
-}
+}  // namespace Buffer_Namespace

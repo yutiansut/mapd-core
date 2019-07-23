@@ -15,8 +15,8 @@
  */
 
 #include "QueryTemplateGenerator.h"
+#include "Shared/Logger.h"
 
-#include <glog/logging.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Verifier.h>
@@ -27,6 +27,7 @@
 
 namespace {
 
+template <class Attributes>
 llvm::Function* default_func_builder(llvm::Module* mod, const std::string& name) {
   using namespace llvm;
 
@@ -46,31 +47,34 @@ llvm::Function* default_func_builder(llvm::Module* mod, const std::string& name)
     func_ptr->setCallingConv(CallingConv::C);
   }
 
-  AttributeSet func_pal;
+  Attributes func_pal;
   {
-    SmallVector<AttributeSet, 4> Attrs;
-    AttributeSet PAS;
+    SmallVector<Attributes, 4> Attrs;
+    Attributes PAS;
     {
       AttrBuilder B;
-      PAS = AttributeSet::get(mod->getContext(), ~0U, B);
+      PAS = Attributes::get(mod->getContext(), ~0U, B);
     }
 
     Attrs.push_back(PAS);
-    func_pal = AttributeSet::get(mod->getContext(), Attrs);
+    func_pal = Attributes::get(mod->getContext(), Attrs);
   }
   func_ptr->setAttributes(func_pal);
 
   return func_ptr;
 }
 
+template <class Attributes>
 llvm::Function* pos_start(llvm::Module* mod) {
-  return default_func_builder(mod, "pos_start");
+  return default_func_builder<Attributes>(mod, "pos_start");
 }
 
+template <class Attributes>
 llvm::Function* group_buff_idx(llvm::Module* mod) {
-  return default_func_builder(mod, "group_buff_idx");
+  return default_func_builder<Attributes>(mod, "group_buff_idx");
 }
 
+template <class Attributes>
 llvm::Function* pos_step(llvm::Module* mod) {
   using namespace llvm;
 
@@ -90,26 +94,26 @@ llvm::Function* pos_step(llvm::Module* mod) {
     func_ptr->setCallingConv(CallingConv::C);
   }
 
-  AttributeSet func_pal;
+  Attributes func_pal;
   {
-    SmallVector<AttributeSet, 4> Attrs;
-    AttributeSet PAS;
+    SmallVector<Attributes, 4> Attrs;
+    Attributes PAS;
     {
       AttrBuilder B;
-      PAS = AttributeSet::get(mod->getContext(), ~0U, B);
+      PAS = Attributes::get(mod->getContext(), ~0U, B);
     }
 
     Attrs.push_back(PAS);
-    func_pal = AttributeSet::get(mod->getContext(), Attrs);
+    func_pal = Attributes::get(mod->getContext(), Attrs);
   }
   func_ptr->setAttributes(func_pal);
 
   return func_ptr;
 }
 
+template <class Attributes>
 llvm::Function* row_process(llvm::Module* mod,
                             const size_t aggr_col_count,
-                            const bool is_nested,
                             const bool hoist_literals) {
   using namespace llvm;
 
@@ -126,7 +130,6 @@ llvm::Function* row_process(llvm::Module* mod,
     }
   } else {                           // group by query
     func_args.push_back(pi64_type);  // groups buffer
-    func_args.push_back(pi64_type);  // small groups buffer
     func_args.push_back(pi32_type);  // 1 iff current row matched, else 0
     func_args.push_back(pi32_type);  // total rows matched from the caller
     func_args.push_back(pi32_type);  // total rows matched before atomic increment
@@ -145,7 +148,7 @@ llvm::Function* row_process(llvm::Module* mod,
       /*Params=*/func_args,
       /*isVarArg=*/false);
 
-  auto func_name = unique_name("row_process", is_nested);
+  std::string func_name{"row_process"};
   auto func_ptr = mod->getFunction(func_name);
 
   if (!func_ptr) {
@@ -156,17 +159,17 @@ llvm::Function* row_process(llvm::Module* mod,
         mod);  // (external, no body)
     func_ptr->setCallingConv(CallingConv::C);
 
-    AttributeSet func_pal;
+    Attributes func_pal;
     {
-      SmallVector<AttributeSet, 4> Attrs;
-      AttributeSet PAS;
+      SmallVector<Attributes, 4> Attrs;
+      Attributes PAS;
       {
         AttrBuilder B;
-        PAS = AttributeSet::get(mod->getContext(), ~0U, B);
+        PAS = Attributes::get(mod->getContext(), ~0U, B);
       }
 
       Attrs.push_back(PAS);
-      func_pal = AttributeSet::get(mod->getContext(), Attrs);
+      func_pal = Attributes::get(mod->getContext(), Attrs);
     }
     func_ptr->setAttributes(func_pal);
   }
@@ -176,20 +179,21 @@ llvm::Function* row_process(llvm::Module* mod,
 
 }  // namespace
 
-llvm::Function* query_template(llvm::Module* mod,
-                               const size_t aggr_col_count,
-                               const bool is_nested,
-                               const bool hoist_literals,
-                               const bool is_estimate_query) {
+template <class Attributes>
+llvm::Function* query_template_impl(llvm::Module* mod,
+                                    const size_t aggr_col_count,
+                                    const bool hoist_literals,
+                                    const bool is_estimate_query) {
   using namespace llvm;
 
-  auto func_pos_start = pos_start(mod);
+  auto func_pos_start = pos_start<Attributes>(mod);
   CHECK(func_pos_start);
-  auto func_pos_step = pos_step(mod);
+  auto func_pos_step = pos_step<Attributes>(mod);
   CHECK(func_pos_step);
-  auto func_group_buff_idx = group_buff_idx(mod);
+  auto func_group_buff_idx = group_buff_idx<Attributes>(mod);
   CHECK(func_group_buff_idx);
-  auto func_row_process = row_process(mod, is_estimate_query ? 1 : aggr_col_count, is_nested, hoist_literals);
+  auto func_row_process = row_process<Attributes>(
+      mod, is_estimate_query ? 1 : aggr_col_count, hoist_literals);
   CHECK(func_row_process);
 
   auto i8_type = IntegerType::get(mod->getContext(), 8);
@@ -212,9 +216,8 @@ llvm::Function* query_template(llvm::Module* mod,
 
   query_args.push_back(pi64_type);
   query_args.push_back(ppi64_type);
-  query_args.push_back(ppi64_type);
   query_args.push_back(i32_type);
-  query_args.push_back(i64_type);
+  query_args.push_back(pi64_type);
   query_args.push_back(pi32_type);
   query_args.push_back(pi32_type);
 
@@ -223,7 +226,7 @@ llvm::Function* query_template(llvm::Module* mod,
       /*Params=*/query_args,
       /*isVarArg=*/false);
 
-  auto query_template_name = unique_name("query_template", is_nested);
+  std::string query_template_name{"query_template"};
   auto query_func_ptr = mod->getFunction(query_template_name);
   CHECK(!query_func_ptr);
 
@@ -234,21 +237,21 @@ llvm::Function* query_template(llvm::Module* mod,
       mod);
   query_func_ptr->setCallingConv(CallingConv::C);
 
-  AttributeSet query_func_pal;
+  Attributes query_func_pal;
   {
-    SmallVector<AttributeSet, 4> Attrs;
-    AttributeSet PAS;
+    SmallVector<Attributes, 4> Attrs;
+    Attributes PAS;
     {
       AttrBuilder B;
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 1U, B);
+      PAS = Attributes::get(mod->getContext(), 1U, B);
     }
 
     Attrs.push_back(PAS);
     {
       AttrBuilder B;
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 2U, B);
+      PAS = Attributes::get(mod->getContext(), 2U, B);
     }
 
     Attrs.push_back(PAS);
@@ -256,18 +259,18 @@ llvm::Function* query_template(llvm::Module* mod,
     {
       AttrBuilder B;
       B.addAttribute(Attribute::NoCapture);
-      Attrs.push_back(AttributeSet::get(mod->getContext(), 3U, B));
+      Attrs.push_back(Attributes::get(mod->getContext(), 3U, B));
     }
 
     {
       AttrBuilder B;
       B.addAttribute(Attribute::NoCapture);
-      Attrs.push_back(AttributeSet::get(mod->getContext(), 4U, B));
+      Attrs.push_back(Attributes::get(mod->getContext(), 4U, B));
     }
 
     Attrs.push_back(PAS);
 
-    query_func_pal = AttributeSet::get(mod->getContext(), Attrs);
+    query_func_pal = Attributes::get(mod->getContext(), Attrs);
   }
   query_func_ptr->setAttributes(query_func_pal);
 
@@ -289,28 +292,28 @@ llvm::Function* query_template(llvm::Module* mod,
   agg_init_val->setName("agg_init_val");
   Value* out = &*(++query_arg_it);
   out->setName("out");
-  Value* unused = &*(++query_arg_it);
-  unused->setName("unused");
   Value* frag_idx = &*(++query_arg_it);
   frag_idx->setName("frag_idx");
-  Value* join_hash_table = &*(++query_arg_it);
-  join_hash_table->setName("join_hash_table");
+  Value* join_hash_tables = &*(++query_arg_it);
+  join_hash_tables->setName("join_hash_tables");
   Value* total_matched = &*(++query_arg_it);
   total_matched->setName("total_matched");
   Value* error_code = &*(++query_arg_it);
   error_code->setName("error_code");
 
   auto bb_entry = BasicBlock::Create(mod->getContext(), ".entry", query_func_ptr, 0);
-  auto bb_preheader = BasicBlock::Create(mod->getContext(), ".loop.preheader", query_func_ptr, 0);
+  auto bb_preheader =
+      BasicBlock::Create(mod->getContext(), ".loop.preheader", query_func_ptr, 0);
   auto bb_forbody = BasicBlock::Create(mod->getContext(), ".for.body", query_func_ptr, 0);
-  auto bb_crit_edge = BasicBlock::Create(mod->getContext(), "._crit_edge", query_func_ptr, 0);
+  auto bb_crit_edge =
+      BasicBlock::Create(mod->getContext(), "._crit_edge", query_func_ptr, 0);
   auto bb_exit = BasicBlock::Create(mod->getContext(), ".exit", query_func_ptr, 0);
 
   // Block  (.entry)
   std::vector<Value*> result_ptr_vec;
   if (!is_estimate_query) {
     for (size_t i = 0; i < aggr_col_count; ++i) {
-      auto result_ptr = new AllocaInst(i64_type, "result", bb_entry);
+      auto result_ptr = new AllocaInst(i64_type, 0, "result", bb_entry);
       result_ptr->setAlignment(8);
       result_ptr_vec.push_back(result_ptr);
     }
@@ -318,12 +321,13 @@ llvm::Function* query_template(llvm::Module* mod,
 
   LoadInst* row_count = new LoadInst(row_count_ptr, "row_count", false, bb_entry);
   row_count->setAlignment(8);
-
+  row_count->setName("row_count");
   std::vector<Value*> agg_init_val_vec;
   if (!is_estimate_query) {
     for (size_t i = 0; i < aggr_col_count; ++i) {
       auto idx_lv = ConstantInt::get(i32_type, i);
-      auto agg_init_gep = GetElementPtrInst::CreateInBounds(agg_init_val, idx_lv, "", bb_entry);
+      auto agg_init_gep =
+          GetElementPtrInst::CreateInBounds(agg_init_val, idx_lv, "", bb_entry);
       auto agg_init_val = new LoadInst(agg_init_gep, "", false, bb_entry);
       agg_init_val->setAlignment(8);
       agg_init_val_vec.push_back(agg_init_val);
@@ -335,13 +339,13 @@ llvm::Function* query_template(llvm::Module* mod,
   CallInst* pos_start = CallInst::Create(func_pos_start, "pos_start", bb_entry);
   pos_start->setCallingConv(CallingConv::C);
   pos_start->setTailCall(true);
-  AttributeSet pos_start_pal;
+  Attributes pos_start_pal;
   pos_start->setAttributes(pos_start_pal);
 
   CallInst* pos_step = CallInst::Create(func_pos_step, "pos_step", bb_entry);
   pos_step->setCallingConv(CallingConv::C);
   pos_step->setTailCall(true);
-  AttributeSet pos_step_pal;
+  Attributes pos_step_pal;
   pos_step->setAttributes(pos_step_pal);
 
   CallInst* group_buff_idx = nullptr;
@@ -349,12 +353,13 @@ llvm::Function* query_template(llvm::Module* mod,
     group_buff_idx = CallInst::Create(func_group_buff_idx, "group_buff_idx", bb_entry);
     group_buff_idx->setCallingConv(CallingConv::C);
     group_buff_idx->setTailCall(true);
-    AttributeSet group_buff_idx_pal;
+    Attributes group_buff_idx_pal;
     group_buff_idx->setAttributes(group_buff_idx_pal);
   }
 
   CastInst* pos_start_i64 = new SExtInst(pos_start, i64_type, "", bb_entry);
-  ICmpInst* enter_or_not = new ICmpInst(*bb_entry, ICmpInst::ICMP_SLT, pos_start_i64, row_count, "");
+  ICmpInst* enter_or_not =
+      new ICmpInst(*bb_entry, ICmpInst::ICMP_SLT, pos_start_i64, row_count, "");
   BranchInst::Create(bb_preheader, bb_exit, enter_or_not, bb_entry);
 
   // Block .loop.preheader
@@ -368,7 +373,8 @@ llvm::Function* query_template(llvm::Module* mod,
   pos->addIncoming(pos_inc_pre, bb_forbody);
 
   std::vector<Value*> row_process_params;
-  row_process_params.insert(row_process_params.end(), result_ptr_vec.begin(), result_ptr_vec.end());
+  row_process_params.insert(
+      row_process_params.end(), result_ptr_vec.begin(), result_ptr_vec.end());
   if (is_estimate_query) {
     row_process_params.push_back(new LoadInst(out, "", false, bb_forbody));
   }
@@ -380,14 +386,17 @@ llvm::Function* query_template(llvm::Module* mod,
     CHECK(literals);
     row_process_params.push_back(literals);
   }
-  CallInst* row_process = CallInst::Create(func_row_process, row_process_params, "", bb_forbody);
+  CallInst* row_process =
+      CallInst::Create(func_row_process, row_process_params, "", bb_forbody);
   row_process->setCallingConv(CallingConv::C);
   row_process->setTailCall(false);
-  AttributeSet row_process_pal;
+  Attributes row_process_pal;
   row_process->setAttributes(row_process_pal);
 
-  BinaryOperator* pos_inc = BinaryOperator::CreateNSW(Instruction::Add, pos, pos_step_i64, "", bb_forbody);
-  ICmpInst* loop_or_exit = new ICmpInst(*bb_forbody, ICmpInst::ICMP_SLT, pos_inc, row_count, "");
+  BinaryOperator* pos_inc =
+      BinaryOperator::CreateNSW(Instruction::Add, pos, pos_step_i64, "", bb_forbody);
+  ICmpInst* loop_or_exit =
+      new ICmpInst(*bb_forbody, ICmpInst::ICMP_SLT, pos_inc, row_count, "");
   BranchInst::Create(bb_forbody, bb_crit_edge, loop_or_exit, bb_forbody);
 
   // Block ._crit_edge
@@ -406,7 +415,8 @@ llvm::Function* query_template(llvm::Module* mod,
   std::vector<PHINode*> result_vec;
   if (!is_estimate_query) {
     for (int64_t i = aggr_col_count - 1; i >= 0; --i) {
-      auto result = PHINode::Create(IntegerType::get(mod->getContext(), 64), 2, "", bb_exit);
+      auto result =
+          PHINode::Create(IntegerType::get(mod->getContext(), 64), 2, "", bb_exit);
       result->addIncoming(result_vec_pre[i], bb_crit_edge);
       result->addIncoming(agg_init_val_vec[i], bb_entry);
       result_vec.insert(result_vec.begin(), result);
@@ -420,8 +430,12 @@ llvm::Function* query_template(llvm::Module* mod,
       auto col_buffer = new LoadInst(out_gep, "", false, bb_exit);
       col_buffer->setAlignment(8);
       auto slot_idx = BinaryOperator::CreateAdd(
-          group_buff_idx, BinaryOperator::CreateMul(frag_idx, pos_step, "", bb_exit), "", bb_exit);
-      auto target_addr = GetElementPtrInst::CreateInBounds(col_buffer, slot_idx, "", bb_exit);
+          group_buff_idx,
+          BinaryOperator::CreateMul(frag_idx, pos_step, "", bb_exit),
+          "",
+          bb_exit);
+      auto target_addr =
+          GetElementPtrInst::CreateInBounds(col_buffer, slot_idx, "", bb_exit);
       StoreInst* result_st = new StoreInst(result_vec[i], target_addr, false, bb_exit);
       result_st->setAlignment(8);
     }
@@ -440,27 +454,38 @@ llvm::Function* query_template(llvm::Module* mod,
   return query_func_ptr;
 }
 
-llvm::Function* query_group_by_template(llvm::Module* mod,
-                                        const bool is_nested,
-                                        const bool hoist_literals,
-                                        const QueryMemoryDescriptor& query_mem_desc,
-                                        const ExecutorDeviceType device_type,
-                                        const bool check_scan_limit) {
+template <class Attributes>
+llvm::Function* query_group_by_template_impl(llvm::Module* mod,
+                                             const bool hoist_literals,
+                                             const QueryMemoryDescriptor& query_mem_desc,
+                                             const ExecutorDeviceType device_type,
+                                             const bool check_scan_limit) {
   using namespace llvm;
 
-  auto func_pos_start = pos_start(mod);
+  auto func_pos_start = pos_start<Attributes>(mod);
   CHECK(func_pos_start);
-  auto func_pos_step = pos_step(mod);
+  auto func_pos_step = pos_step<Attributes>(mod);
   CHECK(func_pos_step);
-  auto func_group_buff_idx = group_buff_idx(mod);
+  auto func_group_buff_idx = group_buff_idx<Attributes>(mod);
   CHECK(func_group_buff_idx);
-  auto func_row_process = row_process(mod, 0, is_nested, hoist_literals);
+  auto func_row_process = row_process<Attributes>(mod, 0, hoist_literals);
   CHECK(func_row_process);
-  auto func_init_shared_mem = query_mem_desc.sharedMemBytes(device_type) ? mod->getFunction("init_shared_mem")
-                                                                         : mod->getFunction("init_shared_mem_nop");
+  auto func_init_shared_mem = query_mem_desc.sharedMemBytes(device_type)
+                                  ? mod->getFunction("init_shared_mem")
+                                  : mod->getFunction("init_shared_mem_nop");
+  if (query_mem_desc.getGpuMemSharing() ==
+      GroupByMemSharing::SharedForKeylessOneColumnKnownRange) {
+    func_init_shared_mem = mod->getFunction("init_shared_mem_dynamic");
+  }
   CHECK(func_init_shared_mem);
-  auto func_write_back =
-      query_mem_desc.sharedMemBytes(device_type) ? mod->getFunction("write_back") : mod->getFunction("write_back_nop");
+
+  auto func_write_back = query_mem_desc.sharedMemBytes(device_type)
+                             ? mod->getFunction("write_back")
+                             : mod->getFunction("write_back_nop");
+  if (query_mem_desc.getGpuMemSharing() ==
+      GroupByMemSharing::SharedForKeylessOneColumnKnownRange) {
+    func_write_back = mod->getFunction("write_back_smem_nop");
+  }
   CHECK(func_write_back);
 
   auto i32_type = IntegerType::get(mod->getContext(), 32);
@@ -482,9 +507,8 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
   query_args.push_back(pi64_type);
 
   query_args.push_back(ppi64_type);
-  query_args.push_back(ppi64_type);
   query_args.push_back(i32_type);
-  query_args.push_back(i64_type);
+  query_args.push_back(pi64_type);
   query_args.push_back(pi32_type);
   query_args.push_back(pi32_type);
 
@@ -493,7 +517,7 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
       /*Params=*/query_args,
       /*isVarArg=*/false);
 
-  auto query_name = unique_name("query_group_by_template", is_nested);
+  std::string query_name{"query_group_by_template"};
   auto query_func_ptr = mod->getFunction(query_name);
   CHECK(!query_func_ptr);
 
@@ -505,15 +529,15 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
 
   query_func_ptr->setCallingConv(CallingConv::C);
 
-  AttributeSet query_func_pal;
+  Attributes query_func_pal;
   {
-    SmallVector<AttributeSet, 4> Attrs;
-    AttributeSet PAS;
+    SmallVector<Attributes, 4> Attrs;
+    Attributes PAS;
     {
       AttrBuilder B;
       B.addAttribute(Attribute::ReadNone);
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 1U, B);
+      PAS = Attributes::get(mod->getContext(), 1U, B);
     }
 
     Attrs.push_back(PAS);
@@ -521,7 +545,7 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
       AttrBuilder B;
       B.addAttribute(Attribute::ReadOnly);
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 2U, B);
+      PAS = Attributes::get(mod->getContext(), 2U, B);
     }
 
     Attrs.push_back(PAS);
@@ -529,7 +553,7 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
       AttrBuilder B;
       B.addAttribute(Attribute::ReadNone);
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 3U, B);
+      PAS = Attributes::get(mod->getContext(), 3U, B);
     }
 
     Attrs.push_back(PAS);
@@ -537,19 +561,19 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
       AttrBuilder B;
       B.addAttribute(Attribute::ReadOnly);
       B.addAttribute(Attribute::NoCapture);
-      PAS = AttributeSet::get(mod->getContext(), 4U, B);
+      PAS = Attributes::get(mod->getContext(), 4U, B);
     }
 
     Attrs.push_back(PAS);
     {
       AttrBuilder B;
       B.addAttribute(Attribute::UWTable);
-      PAS = AttributeSet::get(mod->getContext(), ~0U, B);
+      PAS = Attributes::get(mod->getContext(), ~0U, B);
     }
 
     Attrs.push_back(PAS);
 
-    query_func_pal = AttributeSet::get(mod->getContext(), Attrs);
+    query_func_pal = Attributes::get(mod->getContext(), Attrs);
   }
   query_func_ptr->setAttributes(query_func_pal);
 
@@ -572,78 +596,86 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
   agg_init_val->setName("agg_init_val");
   Value* group_by_buffers = &*(++query_arg_it);
   group_by_buffers->setName("group_by_buffers");
-  Value* small_groups_buffer = &*(++query_arg_it);
-  small_groups_buffer->setName("small_groups_buffer");
   Value* frag_idx = &*(++query_arg_it);
   frag_idx->setName("frag_idx");
-  Value* join_hash_table = &*(++query_arg_it);
-  join_hash_table->setName("join_hash_table");
+  Value* join_hash_tables = &*(++query_arg_it);
+  join_hash_tables->setName("join_hash_tables");
   Value* total_matched = &*(++query_arg_it);
   total_matched->setName("total_matched");
   Value* error_code = &*(++query_arg_it);
   error_code->setName("error_code");
 
   auto bb_entry = BasicBlock::Create(mod->getContext(), ".entry", query_func_ptr, 0);
-  auto bb_preheader = BasicBlock::Create(mod->getContext(), ".loop.preheader", query_func_ptr, 0);
+  auto bb_preheader =
+      BasicBlock::Create(mod->getContext(), ".loop.preheader", query_func_ptr, 0);
   auto bb_forbody = BasicBlock::Create(mod->getContext(), ".forbody", query_func_ptr, 0);
-  auto bb_crit_edge = BasicBlock::Create(mod->getContext(), "._crit_edge", query_func_ptr, 0);
+  auto bb_crit_edge =
+      BasicBlock::Create(mod->getContext(), "._crit_edge", query_func_ptr, 0);
   auto bb_exit = BasicBlock::Create(mod->getContext(), ".exit", query_func_ptr, 0);
 
   // Block  .entry
   LoadInst* row_count = new LoadInst(row_count_ptr, "", false, bb_entry);
   row_count->setAlignment(8);
+  row_count->setName("row_count");
+
   LoadInst* max_matched = new LoadInst(max_matched_ptr, "", false, bb_entry);
   max_matched->setAlignment(4);
-  auto crt_matched_ptr = new AllocaInst(i32_type, "crt_matched", bb_entry);
-  auto old_total_matched_ptr = new AllocaInst(i32_type, "old_total_matched", bb_entry);
+  auto crt_matched_ptr = new AllocaInst(i32_type, 0, "crt_matched", bb_entry);
+  auto old_total_matched_ptr = new AllocaInst(i32_type, 0, "old_total_matched", bb_entry);
   CallInst* pos_start = CallInst::Create(func_pos_start, "", bb_entry);
   pos_start->setCallingConv(CallingConv::C);
   pos_start->setTailCall(true);
-  AttributeSet pos_start_pal;
+  Attributes pos_start_pal;
   pos_start->setAttributes(pos_start_pal);
 
   CallInst* pos_step = CallInst::Create(func_pos_step, "", bb_entry);
   pos_step->setCallingConv(CallingConv::C);
   pos_step->setTailCall(true);
-  AttributeSet pos_step_pal;
+  Attributes pos_step_pal;
   pos_step->setAttributes(pos_step_pal);
 
   CallInst* group_buff_idx = CallInst::Create(func_group_buff_idx, "", bb_entry);
   group_buff_idx->setCallingConv(CallingConv::C);
   group_buff_idx->setTailCall(true);
-  AttributeSet group_buff_idx_pal;
+  Attributes group_buff_idx_pal;
   group_buff_idx->setAttributes(group_buff_idx_pal);
 
   CastInst* pos_start_i64 = new SExtInst(pos_start, i64_type, "", bb_entry);
   const PointerType* Ty = dyn_cast<PointerType>(group_by_buffers->getType());
   CHECK(Ty);
   GetElementPtrInst* group_by_buffers_gep = GetElementPtrInst::Create(
-#if !(LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR == 5)
-      Ty->getElementType(),
-#endif
-      group_by_buffers,
-      group_buff_idx,
-      "",
-      bb_entry);
+      Ty->getElementType(), group_by_buffers, group_buff_idx, "", bb_entry);
   LoadInst* col_buffer = new LoadInst(group_by_buffers_gep, "", false, bb_entry);
+  col_buffer->setName("col_buffer");
   col_buffer->setAlignment(8);
-  LoadInst* small_buffer{nullptr};
-  if (query_mem_desc.getSmallBufferSizeBytes()) {
-    auto small_buffer_gep = GetElementPtrInst::Create(
-#if !(LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR == 5)
-        Ty->getElementType(),
-#endif
-        small_groups_buffer,
-        group_buff_idx,
+
+  llvm::ConstantInt* shared_mem_num_elements_lv = nullptr;
+  llvm::ConstantInt* shared_mem_bytes_lv = nullptr;
+  llvm::CallInst* result_buffer = nullptr;
+  if (query_mem_desc.getGpuMemSharing() ==
+      GroupByMemSharing::SharedForKeylessOneColumnKnownRange) {
+    int32_t num_shared_mem_buckets = query_mem_desc.getEntryCount() + 1;
+    shared_mem_bytes_lv =
+        ConstantInt::get(i32_type, query_mem_desc.sharedMemBytes(device_type));
+    shared_mem_num_elements_lv = ConstantInt::get(i32_type, num_shared_mem_buckets);
+    result_buffer = CallInst::Create(
+        func_init_shared_mem,
+        std::vector<llvm::Value*>{col_buffer, shared_mem_num_elements_lv},
         "",
         bb_entry);
-    small_buffer = new LoadInst(small_buffer_gep, "", false, bb_entry);
-    small_buffer->setAlignment(8);
+  } else {
+    shared_mem_bytes_lv =
+        ConstantInt::get(i32_type, query_mem_desc.sharedMemBytes(device_type));
+    result_buffer =
+        CallInst::Create(func_init_shared_mem,
+                         std::vector<llvm::Value*>{col_buffer, shared_mem_bytes_lv},
+                         "",
+                         bb_entry);
   }
-  auto shared_mem_bytes_lv = ConstantInt::get(i32_type, query_mem_desc.sharedMemBytes(device_type));
-  auto result_buffer =
-      CallInst::Create(func_init_shared_mem, std::vector<llvm::Value*>{col_buffer, shared_mem_bytes_lv}, "", bb_entry);
-  ICmpInst* enter_or_not = new ICmpInst(*bb_entry, ICmpInst::ICMP_SLT, pos_start_i64, row_count, "");
+  result_buffer->setName("result_buffer");
+
+  ICmpInst* enter_or_not =
+      new ICmpInst(*bb_entry, ICmpInst::ICMP_SLT, pos_start_i64, row_count, "");
   BranchInst::Create(bb_preheader, bb_exit, enter_or_not, bb_entry);
 
   // Block .loop.preheader
@@ -656,11 +688,6 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
 
   std::vector<Value*> row_process_params;
   row_process_params.push_back(result_buffer);
-  if (query_mem_desc.getSmallBufferSizeBytes()) {
-    row_process_params.push_back(small_buffer);
-  } else {
-    row_process_params.push_back(Constant::getNullValue(pi64_type));
-  }
   row_process_params.push_back(crt_matched_ptr);
   row_process_params.push_back(total_matched);
   row_process_params.push_back(old_total_matched_ptr);
@@ -673,31 +700,53 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
     row_process_params.push_back(literals);
   }
   if (check_scan_limit) {
-    new StoreInst(ConstantInt::get(IntegerType::get(mod->getContext(), 32), 0), crt_matched_ptr, bb_forbody);
+    new StoreInst(ConstantInt::get(IntegerType::get(mod->getContext(), 32), 0),
+                  crt_matched_ptr,
+                  bb_forbody);
   }
-  CallInst* row_process = CallInst::Create(func_row_process, row_process_params, "", bb_forbody);
+  CallInst* row_process =
+      CallInst::Create(func_row_process, row_process_params, "", bb_forbody);
   row_process->setCallingConv(CallingConv::C);
   row_process->setTailCall(true);
-  AttributeSet row_process_pal;
+  Attributes row_process_pal;
   row_process->setAttributes(row_process_pal);
 
-  BinaryOperator* pos_inc = BinaryOperator::Create(Instruction::Add, pos, pos_step_i64, "", bb_forbody);
-  ICmpInst* loop_or_exit = new ICmpInst(*bb_forbody, ICmpInst::ICMP_SLT, pos_inc, row_count, "");
+  // Forcing all threads within a warp to be synchronized (Compute >= 7.x)
+  if (query_mem_desc.isWarpSyncRequired(device_type)) {
+    auto func_sync_warp_protected = mod->getFunction("sync_warp_protected");
+    CHECK(func_sync_warp_protected);
+    CallInst::Create(func_sync_warp_protected,
+                     std::vector<llvm::Value*>{pos, row_count},
+                     "",
+                     bb_forbody);
+  }
+
+  BinaryOperator* pos_inc =
+      BinaryOperator::Create(Instruction::Add, pos, pos_step_i64, "", bb_forbody);
+  ICmpInst* loop_or_exit =
+      new ICmpInst(*bb_forbody, ICmpInst::ICMP_SLT, pos_inc, row_count, "");
   if (check_scan_limit) {
     auto crt_matched = new LoadInst(crt_matched_ptr, "", false, bb_forbody);
-    auto filter_match = BasicBlock::Create(mod->getContext(), "filter_match", query_func_ptr, bb_crit_edge);
-    llvm::Value* new_total_matched = new LoadInst(old_total_matched_ptr, "", false, filter_match);
-    new_total_matched = BinaryOperator::CreateAdd(new_total_matched, crt_matched, "", filter_match);
+    auto filter_match = BasicBlock::Create(
+        mod->getContext(), "filter_match", query_func_ptr, bb_crit_edge);
+    llvm::Value* new_total_matched =
+        new LoadInst(old_total_matched_ptr, "", false, filter_match);
+    new_total_matched =
+        BinaryOperator::CreateAdd(new_total_matched, crt_matched, "", filter_match);
     CHECK(new_total_matched);
-    ICmpInst* limit_not_reached = new ICmpInst(*filter_match, ICmpInst::ICMP_SLT, new_total_matched, max_matched, "");
-    BranchInst::Create(bb_forbody,
-                       bb_crit_edge,
-                       BinaryOperator::Create(BinaryOperator::And, loop_or_exit, limit_not_reached, "", filter_match),
-                       filter_match);
-    auto filter_nomatch = BasicBlock::Create(mod->getContext(), "filter_nomatch", query_func_ptr, bb_crit_edge);
+    ICmpInst* limit_not_reached = new ICmpInst(
+        *filter_match, ICmpInst::ICMP_SLT, new_total_matched, max_matched, "");
+    BranchInst::Create(
+        bb_forbody,
+        bb_crit_edge,
+        BinaryOperator::Create(
+            BinaryOperator::And, loop_or_exit, limit_not_reached, "", filter_match),
+        filter_match);
+    auto filter_nomatch = BasicBlock::Create(
+        mod->getContext(), "filter_nomatch", query_func_ptr, bb_crit_edge);
     BranchInst::Create(bb_forbody, bb_crit_edge, loop_or_exit, filter_nomatch);
-    ICmpInst* crt_matched_nz =
-        new ICmpInst(*bb_forbody, ICmpInst::ICMP_NE, crt_matched, ConstantInt::get(i32_type, 0), "");
+    ICmpInst* crt_matched_nz = new ICmpInst(
+        *bb_forbody, ICmpInst::ICMP_NE, crt_matched, ConstantInt::get(i32_type, 0), "");
     BranchInst::Create(filter_match, filter_nomatch, crt_matched_nz, bb_forbody);
     pos->addIncoming(pos_start_i64, bb_preheader);
     pos->addIncoming(pos_pre, filter_match);
@@ -712,22 +761,73 @@ llvm::Function* query_group_by_template(llvm::Module* mod,
   BranchInst::Create(bb_exit, bb_crit_edge);
 
   // Block .exit
-  CallInst::Create(func_write_back, std::vector<Value*>{col_buffer, result_buffer, shared_mem_bytes_lv}, "", bb_exit);
+  if (query_mem_desc.getGpuMemSharing() ==
+      GroupByMemSharing::SharedForKeylessOneColumnKnownRange) {
+    result_buffer->setName("shared_mem_result");
+    col_buffer->setName("col_buffer_global");
+    CHECK_LT(query_mem_desc.getTargetIdxForKey(),
+             2);  // Saman: not expected for the shared memory design if more than 1
+    // Depending on the aggregate's target expression index, we choose different memory
+    // layout for the shared memory
+    auto func_agg_from_smem_to_gmem =
+        (query_mem_desc.getTargetIdxForKey() == 0)
+            ? mod->getFunction("agg_from_smem_to_gmem_count_binId")
+            : mod->getFunction("agg_from_smem_to_gmem_binId_count");
+    CHECK(func_agg_from_smem_to_gmem);
+    CallInst::Create(
+        func_agg_from_smem_to_gmem,
+        std::vector<Value*>{col_buffer, result_buffer, (shared_mem_num_elements_lv)},
+        "",
+        bb_exit);
+  }
+
+  CallInst::Create(func_write_back,
+                   std::vector<Value*>{col_buffer, result_buffer, shared_mem_bytes_lv},
+                   "",
+                   bb_exit);
   ReturnInst::Create(mod->getContext(), bb_exit);
 
   // Resolve Forward References
   pos_pre->replaceAllUsesWith(pos_inc);
   delete pos_pre;
 
-  if (verifyFunction(*query_func_ptr)) {
+  if (verifyFunction(*query_func_ptr, &llvm::errs())) {
     LOG(FATAL) << "Generated invalid code. ";
   }
 
   return query_func_ptr;
 }
 
-std::string unique_name(const char* base_name, const bool is_nested) {
-  char full_name[128] = {0};
-  snprintf(full_name, sizeof(full_name), "%s_%u", base_name, static_cast<unsigned>(is_nested));
-  return full_name;
+#if LLVM_VERSION_MAJOR >= 6
+llvm::Function* query_template(llvm::Module* module,
+                               const size_t aggr_col_count,
+                               const bool hoist_literals,
+                               const bool is_estimate_query) {
+  return query_template_impl<llvm::AttributeList>(
+      module, aggr_col_count, hoist_literals, is_estimate_query);
 }
+llvm::Function* query_group_by_template(llvm::Module* module,
+                                        const bool hoist_literals,
+                                        const QueryMemoryDescriptor& query_mem_desc,
+                                        const ExecutorDeviceType device_type,
+                                        const bool check_scan_limit) {
+  return query_group_by_template_impl<llvm::AttributeList>(
+      module, hoist_literals, query_mem_desc, device_type, check_scan_limit);
+}
+#else
+llvm::Function* query_template(llvm::Module* module,
+                               const size_t aggr_col_count,
+                               const bool hoist_literals,
+                               const bool is_estimate_query) {
+  return query_template_impl<llvm::AttributeSet>(
+      module, aggr_col_count, hoist_literals, is_estimate_query);
+}
+llvm::Function* query_group_by_template(llvm::Module* module,
+                                        const bool hoist_literals,
+                                        const QueryMemoryDescriptor& query_mem_desc,
+                                        const ExecutorDeviceType device_type,
+                                        const bool check_scan_limit) {
+  return query_group_by_template_impl<llvm::AttributeSet>(
+      module, hoist_literals, query_mem_desc, device_type, check_scan_limit);
+}
+#endif

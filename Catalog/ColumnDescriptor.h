@@ -37,16 +37,25 @@ struct ColumnDescriptor {
   bool isSystemCol;
   bool isVirtualCol;
   std::string virtualExpr;
+  bool isDeletedCol;
+  bool isGeoPhyCol{false};
 
-  ColumnDescriptor() : isSystemCol(false), isVirtualCol(false) {}
-  ColumnDescriptor(const int tableId, const int columnId, const std::string& columnName, const SQLTypeInfo columnType)
-      : tableId(tableId),
-        columnId(columnId),
-        columnName(columnName),
-        sourceName(columnName),
-        columnType(columnType),
-        isSystemCol(false),
-        isVirtualCol(false) {}
+  ColumnDescriptor() : isSystemCol(false), isVirtualCol(false), isDeletedCol(false) {}
+  ColumnDescriptor(const int tableId,
+                   const int columnId,
+                   const std::string& columnName,
+                   const SQLTypeInfo columnType)
+      : tableId(tableId)
+      , columnId(columnId)
+      , columnName(columnName)
+      , sourceName(columnName)
+      , columnType(columnType)
+      , isSystemCol(false)
+      , isVirtualCol(false)
+      , isDeletedCol(false) {}
+  ColumnDescriptor(const bool isGeoPhyCol) : ColumnDescriptor() {
+    this->isGeoPhyCol = isGeoPhyCol;
+  }
 };
 
 #endif  // COLUMN_DESCRIPTOR

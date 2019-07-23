@@ -20,9 +20,11 @@
 #include <cmath>
 #include <string>
 
-const std::string MAPD_GEO_PREFIX{"mapd_geo_"};
+const std::string OMNISCI_GEO_PREFIX{"omnisci_geo"};
+const std::string LEGACY_GEO_PREFIX{"mapd_geo"};
 
-inline std::pair<double, double> geotransform_4326_to_900913(const double lon, const double lat) {
+inline std::pair<double, double> geotransform_4326_to_900913(const double lon,
+                                                             const double lat) {
   static const double e_circ = 40075016.68;  // Earth's circumference, meters
   static const double e_circ_360 = e_circ / 360;
   static const double pi = std::acos(-1);

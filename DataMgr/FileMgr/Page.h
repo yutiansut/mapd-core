@@ -23,11 +23,12 @@
 #ifndef DATAMGR_MEMORY_FILE_PAGE_H
 #define DATAMGR_MEMORY_FILE_PAGE_H
 
+#include "Shared/Logger.h"
+
 #include <cassert>
 #include <deque>
-#include <vector>
 #include <stdexcept>
-#include <glog/logging.h>
+#include <vector>
 #include "../../Shared/types.h"
 
 namespace File_Namespace {
@@ -75,17 +76,20 @@ struct MultiPage {
 
   /// Destructor -- purges all pages
   ~MultiPage() {
-    while (pageVersions.size() > 0)
+    while (pageVersions.size() > 0) {
       pop();
+    }
   }
 
   /// Returns a reference to the most recent version of the page (optionally, the epoch
   /// is returned via the parameter "epoch").
   inline Page current(int* epoch = NULL) const {
-    if (pageVersions.size() < 1)
+    if (pageVersions.size() < 1) {
       LOG(FATAL) << "No current version of the page exists in this MultiPage.";
-    if (epoch != NULL)
+    }
+    if (epoch != NULL) {
       *epoch = this->epochs.back();
+    }
     return pageVersions.back();
   }
 
@@ -98,8 +102,9 @@ struct MultiPage {
 
   /// Purges the oldest Page
   inline void pop() {
-    if (pageVersions.size() < 1)
+    if (pageVersions.size() < 1) {
       LOG(FATAL) << "No page to pop.";
+    }
     pageVersions.pop_front();
     epochs.pop_front();
     assert(pageVersions.size() == epochs.size());
@@ -119,10 +124,13 @@ struct HeaderInfo {
   int versionEpoch;
   Page page;
 
-  HeaderInfo(const ChunkKey& chunkKey, const int pageId, const int versionEpoch, const Page& page)
+  HeaderInfo(const ChunkKey& chunkKey,
+             const int pageId,
+             const int versionEpoch,
+             const Page& page)
       : chunkKey(chunkKey), pageId(pageId), versionEpoch(versionEpoch), page(page) {}
 };
 
-}  // File_Namespace
+}  // namespace File_Namespace
 
 #endif  // DATAMGR_MEMORY_FILE_PAGE_H

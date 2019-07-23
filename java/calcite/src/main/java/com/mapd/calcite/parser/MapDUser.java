@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.mapd.calcite.parser;
 
 /**
@@ -22,23 +21,19 @@ package com.mapd.calcite.parser;
  */
 public class MapDUser {
   private final String user;
-  private final String passwd;
   private final String catalog;
   private final int mapDPort;
+  private final String session;
 
-  public MapDUser(String user, String passwd, String catalog, int mapDPort) {
+  public MapDUser(String user, String session, String catalog, int mapDPort) {
     this.user = user;
-    this.passwd = passwd;
     this.catalog = catalog;
     this.mapDPort = mapDPort;
+    this.session = session;
   }
 
   public String getDB() {
     return catalog;
-  }
-
-  public String getPasswd() {
-    return passwd;
   }
 
   public String getUser() {
@@ -47,5 +42,9 @@ public class MapDUser {
 
   public int getMapDPort() {
     return mapDPort;
+  }
+
+  public String getSession() {
+    return session;
   }
 }

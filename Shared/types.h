@@ -26,12 +26,13 @@
 
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 // The ChunkKey is a unique identifier for chunks in the database file.
 // The first element of the underlying vector for ChunkKey indicates the type of
 // ChunkKey (also referred to as the keyspace id)
-typedef std::vector<int> ChunkKey;
+using ChunkKey = std::vector<int>;
 
 inline std::string showChunk(const ChunkKey& key) {
   std::ostringstream tss;

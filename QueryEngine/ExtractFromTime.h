@@ -17,42 +17,54 @@
 #ifndef QUERYENGINE_EXTRACTFROMTIME_H
 #define QUERYENGINE_EXTRACTFROMTIME_H
 
-#include <stdint.h>
-#include <time.h>
+#include <cstdint>
+#include <ctime>
+#include "../Shared/funcannotations.h"
 
-#define SECSPERMIN 60L
-#define MINSPERHOUR 60L
-#define HOURSPERDAY 24L
-#define SECSPERHOUR (SECSPERMIN * MINSPERHOUR)
-#define SECSPERDAY (SECSPERHOUR * HOURSPERDAY)
-#define SECSPERQUARTERDAY (SECSPERHOUR * 6)
-#define DAYSPERWEEK 7
-#define MONSPERYEAR 12
+static constexpr int64_t kNanoSecsPerSec = 1000000000;
+static constexpr int64_t kMicroSecsPerSec = 1000000;
+static constexpr int64_t kMilliSecsPerSec = 1000;
+static constexpr int64_t kSecsPerMin = 60;
+static constexpr int64_t kMinsPerHour = 60;
+static constexpr int64_t kHoursPerDay = 24;
+static constexpr int64_t kSecPerHour = 3600;
+static constexpr int64_t kSecsPerDay = 86400;
+static constexpr int64_t kSecsPerQuarterDay = 21600;
+static constexpr int32_t kDaysPerWeek = 7;
+static constexpr int32_t kMonsPerYear = 12;
+static constexpr int64_t kSecsPerHalfDay = 43200;
+static constexpr int64_t kMinsPerMonth = 43200;  // Month of 30 days
 
-#define YEAR_BASE 1900
+static constexpr int32_t kYearBase = 1900;
 
 /* move epoch from 01.01.1970 to 01.03.2000 - this is the first day of new
  * 400-year long cycle, right after additional day of leap year. This adjustment
- * is required only for date calculation, so instead of modifying time_t value
+ * is required only for date calculation, so instead of modifying time value
  * (which would require 64-bit operations to work correctly) it's enough to
  * adjust the calculated number of days since epoch. */
-#define EPOCH_ADJUSTMENT_DAYS 11017
+static constexpr int32_t kEpochAdjustedDays = 11017;
 /* year to which the adjustment was made */
-#define ADJUSTED_EPOCH_YEAR 2000
+static constexpr int32_t kEpochAdjustedYears = 2000;
 /* 1st March of 2000 is Wednesday */
-#define ADJUSTED_EPOCH_WDAY 3
+static constexpr int32_t kEpochAdjustedWDay = 3;
 /* there are 97 leap years in 400-year periods. ((400 - 97) * 365 + 97 * 366) */
-#define DAYS_PER_400_YEARS 146097L
+static constexpr int64_t kDaysPer400Years = 146097;
 /* there are 24 leap years in 100-year periods. ((100 - 24) * 365 + 24 * 366) */
-#define DAYS_PER_100_YEARS 36524L
+static constexpr int64_t kDaysPer100Years = 36524;
 /* there is one leap year every 4 years */
-#define DAYS_PER_4_YEARS (3 * 365 + 366)
+static constexpr int32_t kDaysPer4Years = 3 * 365 + 366;
 /* number of days in a non-leap year */
-#define DAYS_PER_YEAR 365
+static constexpr int32_t kDaysPerYear = 365;
 /* number of days in January */
-#define DAYS_IN_JANUARY 31
+static constexpr int32_t kDaysInJanuary = 31;
 /* number of days in non-leap February */
-#define DAYS_IN_FEBRUARY 28
+static constexpr int32_t kDaysInFebruary = 28;
+
+static constexpr uint32_t kSecondsPerNonLeapYear = 31536000;
+static constexpr uint32_t kSecondsPer4YearCycle = 126230400;
+static constexpr uint32_t kUSecsPerDay = 86400;
+static constexpr uint32_t kEpochOffsetYear1900 = 2208988800;
+static constexpr uint32_t kSecsJanToMar1900 = 5097600;
 
 enum ExtractField {
   kYEAR,
@@ -62,6 +74,9 @@ enum ExtractField {
   kHOUR,
   kMINUTE,
   kSECOND,
+  kMILLISECOND,
+  kMICROSECOND,
+  kNANOSECOND,
   kDOW,
   kISODOW,
   kDOY,
@@ -71,23 +86,11 @@ enum ExtractField {
 };
 
 // Shared by DateTruncate
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_dow(const time_t* tim_p);
+DEVICE int32_t extract_dow(const int64_t lcltime);
 
-#ifdef __CUDACC__
-__device__
-#endif
-    tm*
-    gmtime_r_newlib(const time_t* tim_p, tm* res);
+DEVICE tm gmtime_r_newlib(const int64_t lcltime, tm& res);
 
-extern "C" __attribute__((noinline))
-#ifdef __CUDACC__
-__device__
-#endif
-    int64_t
-    ExtractFromTime(ExtractField field, time_t timeval);
+extern "C" DEVICE NEVER_INLINE int64_t ExtractFromTime(ExtractField field,
+                                                       const int64_t timeval);
 
 #endif  // QUERYENGINE_EXTRACTFROMTIME_H

@@ -23,23 +23,34 @@
  * Copyright (c) 2014 MapD Technologies, Inc.  All rights reserved.
  **/
 
-#include <cstring>
-#include <string>
-#include <iostream>
 #include <boost/tokenizer.hpp>
+#include <cstring>
+#include <iostream>
+#include <string>
 
 // include files for Thrift and MapD Thrift Services
-#include "gen-cpp/MapD.h"
-#include <thrift/transport/TSocket.h>
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TBufferTransports.h>
+#include <thrift/transport/TSocket.h>
+#include "gen-cpp/MapD.h"
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
 using namespace ::apache::thrift::transport;
 
-// Thrift uses boost::shared_ptr instead of std::shared_ptr
+#ifdef HAVE_THRIFT_STD_SHAREDPTR
+#include <memory>
+namespace mapd {
+using std::make_shared;
+using std::shared_ptr;
+}  // namespace mapd
+#else
+#include <boost/make_shared.hpp>
+namespace mapd {
+using boost::make_shared;
 using boost::shared_ptr;
+}  // namespace mapd
+#endif  // HAVE_THRIFT_STD_SHAREDPTR
 
 namespace {
 // anonymous namespace for private functions
@@ -66,8 +77,8 @@ void stream_insert(MapDClient& client,
       row.cols.push_back(ts);
     }
     if (row.cols.size() != row_desc.size()) {
-      std::cerr << "Incorrect number of columns: (" << row.cols.size() << " vs " << row_desc.size() << ") " << line
-                << std::endl;
+      std::cerr << "Incorrect number of columns: (" << row.cols.size() << " vs "
+                << row_desc.size() << ") " << line << std::endl;
       continue;
     }
     input_rows.push_back(row);
@@ -81,18 +92,20 @@ void stream_insert(MapDClient& client,
     }
   }
   // load remaining rowset if any
-  if (input_rows.size() > 0)
+  if (input_rows.size() > 0) {
     client.load_table(session, table_name, input_rows);
+  }
 }
-}
+}  // namespace
 
 int main(int argc, char** argv) {
   std::string server_host("localhost");  // default to localohost
-  int port = 9091;                       // default port number
+  int port = 6274;                       // default port number
   const char* delimiter = "\t";          // only support tab delimiter for now
 
   if (argc < 5) {
-    std::cout << "Usage: <table> <database> <user> <password> [hostname[:port]]" << std::endl;
+    std::cout << "Usage: <table> <database> <user> <password> [hostname[:port]]"
+              << std::endl;
     return 1;
   }
   std::string table_name(argv[1]);
@@ -104,22 +117,23 @@ int main(int argc, char** argv) {
     char* host = strtok(argv[5], ":");
     char* portno = strtok(NULL, ":");
     server_host = host;
-    if (portno != NULL)
+    if (portno != NULL) {
       port = atoi(portno);
+    }
   }
 
-  shared_ptr<TTransport> socket(new TSocket(server_host, port));
-  shared_ptr<TTransport> transport(new TBufferedTransport(socket));
-  shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+  mapd::shared_ptr<TTransport> socket(new TSocket(server_host, port));
+  mapd::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+  mapd::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
   MapDClient client(protocol);
   TSessionId session;
   try {
-    transport->open();                                     // open transport
-    client.connect(session, user_name, passwd, db_name);   // connect to mapd_server
+    transport->open();                                    // open transport
+    client.connect(session, user_name, passwd, db_name);  // connect to omnisci_server
     TTableDetails table_details;
     client.get_table_details(table_details, session, table_name);
     stream_insert(client, session, table_name, table_details.row_desc, delimiter);
-    client.disconnect(session);  // disconnect from mapd_server
+    client.disconnect(session);  // disconnect from omnisci_server
     transport->close();          // close transport
   } catch (TMapDException& e) {
     std::cerr << e.error_msg << std::endl;

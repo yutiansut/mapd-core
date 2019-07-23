@@ -18,6 +18,7 @@
 #define QUERYENGINE_RELALGTRANSLATOR_H
 
 #include "Execute.h"
+#include "QueryFeatures.h"
 #include "RelAlgAbstractInterpreter.h"
 
 #include <ctime>
@@ -42,15 +43,17 @@ class RelAlgTranslator {
   RelAlgTranslator(const Catalog_Namespace::Catalog& cat,
                    const Executor* executor,
                    const std::unordered_map<const RelAlgNode*, int>& input_to_nest_level,
-                   const JoinType join_type,
+                   const std::vector<JoinType>& join_types,
                    const time_t now,
-                   const bool just_explain)
-      : cat_(cat),
-        executor_(executor),
-        input_to_nest_level_(input_to_nest_level),
-        join_type_(join_type),
-        now_(now),
-        just_explain_(just_explain) {}
+                   const bool just_explain,
+                   QueryFeatureDescriptor& feature_stash)
+      : cat_(cat)
+      , executor_(executor)
+      , input_to_nest_level_(input_to_nest_level)
+      , join_types_(join_types)
+      , now_(now)
+      , just_explain_(just_explain)
+      , feature_stash_(feature_stash) {}
 
   std::shared_ptr<Analyzer::Expr> translateScalarRex(const RexScalar* rex) const;
 
@@ -70,9 +73,11 @@ class RelAlgTranslator {
   std::shared_ptr<Analyzer::Expr> translateInOper(const RexOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> getInIntegerSetExpr(std::shared_ptr<Analyzer::Expr> arg,
-                                                      const ResultRows& val_rows) const;
+                                                      const ResultSet& val_set) const;
 
   std::shared_ptr<Analyzer::Expr> translateOper(const RexOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateOverlapsOper(const RexOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> translateCase(const RexCase*) const;
 
@@ -86,11 +91,19 @@ class RelAlgTranslator {
 
   std::shared_ptr<Analyzer::Expr> translateExtract(const RexFunctionOperator*) const;
 
+  std::shared_ptr<Analyzer::Expr> translateDateadd(const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateDatePlusMinus(const RexOperator*) const;
+
   std::shared_ptr<Analyzer::Expr> translateDatediff(const RexFunctionOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> translateDatepart(const RexFunctionOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> translateLength(const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateKeyForString(const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateCardinality(const RexFunctionOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> translateItem(const RexFunctionOperator*) const;
 
@@ -98,20 +111,77 @@ class RelAlgTranslator {
 
   std::shared_ptr<Analyzer::Expr> translateDatetime(const RexFunctionOperator*) const;
 
+  std::shared_ptr<Analyzer::Expr> translateHPTLiteral(const RexFunctionOperator*) const;
+
   std::shared_ptr<Analyzer::Expr> translateAbs(const RexFunctionOperator*) const;
 
   std::shared_ptr<Analyzer::Expr> translateSign(const RexFunctionOperator*) const;
 
+  std::shared_ptr<Analyzer::Expr> translateOffsetInFragment() const;
+
+  std::shared_ptr<Analyzer::Expr> translateArrayFunction(
+      const RexFunctionOperator*) const;
+
   std::shared_ptr<Analyzer::Expr> translateFunction(const RexFunctionOperator*) const;
 
-  std::vector<std::shared_ptr<Analyzer::Expr>> translateFunctionArgs(const RexFunctionOperator*) const;
+  std::shared_ptr<Analyzer::Expr> translateWindowFunction(
+      const RexWindowFunctionOperator*) const;
+
+  Analyzer::ExpressionPtrVector translateFunctionArgs(const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateUnaryGeoFunction(
+      const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateBinaryGeoFunction(
+      const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateTernaryGeoFunction(
+      const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateFunctionWithGeoArg(
+      const RexFunctionOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateGeoComparison(const RexOperator*) const;
+
+  std::shared_ptr<Analyzer::Expr> translateGeoOverlapsOper(const RexOperator*) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoFunctionArg(
+      const RexScalar* rex_scalar,
+      SQLTypeInfo& arg_ti,
+      int32_t& lindex,
+      const bool with_bounds,
+      const bool with_render_group,
+      const bool expand_geo_col) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoColumn(
+      const RexInput*,
+      SQLTypeInfo&,
+      const bool with_bounds,
+      const bool with_render_group,
+      const bool expand_geo_col) const;
+
+  std::vector<std::shared_ptr<Analyzer::Expr>> translateGeoLiteral(const RexLiteral*,
+                                                                   SQLTypeInfo&,
+                                                                   bool) const;
 
   const Catalog_Namespace::Catalog& cat_;
   const Executor* executor_;
   const std::unordered_map<const RelAlgNode*, int> input_to_nest_level_;
-  const JoinType join_type_;
+  const std::vector<JoinType> join_types_;
   time_t now_;
   const bool just_explain_;
+  QueryFeatureDescriptor& feature_stash_;
 };
+
+struct QualsConjunctiveForm {
+  const std::list<std::shared_ptr<Analyzer::Expr>> simple_quals;
+  const std::list<std::shared_ptr<Analyzer::Expr>> quals;
+};
+
+QualsConjunctiveForm qual_to_conjunctive_form(
+    const std::shared_ptr<Analyzer::Expr> qual_expr);
+
+std::vector<std::shared_ptr<Analyzer::Expr>> qual_to_disjunctive_form(
+    const std::shared_ptr<Analyzer::Expr>& qual_expr);
 
 #endif  // QUERYENGINE_RELALGTRANSLATOR_H

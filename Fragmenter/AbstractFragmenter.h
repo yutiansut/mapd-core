@@ -22,20 +22,50 @@
 #ifndef _ABSTRACT_FRAGMENTER_H
 #define _ABSTRACT_FRAGMENTER_H
 
-#include "../Shared/sqltypes.h"
-#include "Fragmenter.h"
-#include <vector>
+#include <boost/variant.hpp>
 #include <string>
+#include <vector>
+#include "../QueryEngine/TargetMetaInfo.h"
+#include "../QueryEngine/TargetValue.h"
+#include "../Shared/UpdelRoll.h"
+#include "../Shared/sqltypes.h"
+#include "../StringDictionary/StringDictionaryProxy.h"
+#include "Fragmenter.h"
 
 // Should the ColumnInfo and FragmentInfo structs be in
 // AbstractFragmenter?
 
+namespace Chunk_NS {
+class Chunk;
+};
+
 namespace Data_Namespace {
 class AbstractBuffer;
 class AbstractDataMgr;
+};  // namespace Data_Namespace
+
+namespace Importer_NS {
+class TypedImportBuffer;
 };
 
+namespace Catalog_Namespace {
+class Catalog;
+}
+struct TableDescriptor;
+struct ColumnDescriptor;
+
 namespace Fragmenter_Namespace {
+
+/**
+ *  slim interface to wrap the result set into
+ */
+class RowDataProvider {
+ public:
+  virtual size_t count() const = 0;
+  virtual StringDictionaryProxy* getLiteralDictionary() const = 0;
+  virtual std::vector<TargetValue> getEntryAt(const size_t index) const = 0;
+  virtual std::vector<TargetValue> getTranslatedEntryAt(const size_t index) const = 0;
+};
 
 /*
  * @type AbstractFragmenter
@@ -59,8 +89,12 @@ class AbstractFragmenter {
    * statistics on data distribution the partitioner
    * keeps. May also prune the predicate.
    */
+  // virtual void getFragmentsForQuery(QueryInfo &queryInfo, const void *predicate = 0) =
+  // 0
 
-  // virtual void getFragmentsForQuery(QueryInfo &queryInfo, const void *predicate = 0) = 0;
+  /**
+   * @brief Get all fragments for the current table.
+   */
   virtual TableInfo getFragmentsForQuery() = 0;
 
   /**
@@ -68,23 +102,27 @@ class AbstractFragmenter {
    * inserts it into the correct partitions
    * with locks and checkpoints
    */
-
-  virtual void insertData(const InsertData& insertDataStruct) = 0;
+  virtual void insertData(InsertData& insertDataStruct) = 0;
 
   /**
    * @brief Given data wrapped in an InsertData struct,
    * inserts it into the correct partitions
    * No locks and checkpoints taken needs to be managed externally
    */
-
-  virtual void insertDataNoCheckpoint(const InsertData& insertDataStruct) = 0;
+  virtual void insertDataNoCheckpoint(InsertData& insertDataStruct) = 0;
 
   /**
    * @brief Will truncate table to less than maxRows by dropping
    * fragments
    */
-
   virtual void dropFragmentsToSize(const size_t maxRows) = 0;
+
+  /**
+   * @brief Update chunk stats
+   */
+  virtual void updateChunkStats(
+      const ColumnDescriptor* cd,
+      std::unordered_map</*fragment_id*/ int, ChunkStats>& stats_map) = 0;
 
   /**
    * @brief Gets the id of the partitioner
@@ -95,10 +133,66 @@ class AbstractFragmenter {
    * @brief Gets the string type of the partitioner
    * @todo have a method returning the enum type?
    */
-
   virtual std::string getFragmenterType() = 0;
+
+  virtual size_t getNumRows() = 0;
+
+  virtual void updateColumn(const Catalog_Namespace::Catalog* catalog,
+                            const TableDescriptor* td,
+                            const ColumnDescriptor* cd,
+                            const int fragment_id,
+                            const std::vector<uint64_t>& frag_offsets,
+                            const std::vector<ScalarTargetValue>& rhs_values,
+                            const SQLTypeInfo& rhs_type,
+                            const Data_Namespace::MemoryLevel memory_level,
+                            UpdelRoll& updel_roll) = 0;
+
+  virtual void updateColumns(const Catalog_Namespace::Catalog* catalog,
+                             const TableDescriptor* td,
+                             const int fragmentId,
+                             const std::vector<TargetMetaInfo> sourceMetaInfo,
+                             const std::vector<const ColumnDescriptor*> columnDescriptors,
+                             const RowDataProvider& sourceDataProvider,
+                             const size_t indexOffFragmentOffsetColumn,
+                             const Data_Namespace::MemoryLevel memoryLevel,
+                             UpdelRoll& updelRoll) = 0;
+
+  virtual void updateColumn(const Catalog_Namespace::Catalog* catalog,
+                            const TableDescriptor* td,
+                            const ColumnDescriptor* cd,
+                            const int fragment_id,
+                            const std::vector<uint64_t>& frag_offsets,
+                            const ScalarTargetValue& rhs_value,
+                            const SQLTypeInfo& rhs_type,
+                            const Data_Namespace::MemoryLevel memory_level,
+                            UpdelRoll& updel_roll) = 0;
+
+  virtual void updateColumnMetadata(const ColumnDescriptor* cd,
+                                    FragmentInfo& fragment,
+                                    std::shared_ptr<Chunk_NS::Chunk> chunk,
+                                    const bool null,
+                                    const double dmax,
+                                    const double dmin,
+                                    const int64_t lmax,
+                                    const int64_t lmin,
+                                    const SQLTypeInfo& rhs_type,
+                                    UpdelRoll& updel_roll) = 0;
+
+  virtual void updateMetadata(const Catalog_Namespace::Catalog* catalog,
+                              const MetaDataKey& key,
+                              UpdelRoll& updel_roll) = 0;
+
+  virtual void compactRows(const Catalog_Namespace::Catalog* catalog,
+                           const TableDescriptor* td,
+                           const int fragmentId,
+                           const std::vector<uint64_t>& fragOffsets,
+                           const Data_Namespace::MemoryLevel memoryLevel,
+                           UpdelRoll& updelRoll) = 0;
+
+  virtual const std::vector<uint64_t> getVacuumOffsets(
+      const std::shared_ptr<Chunk_NS::Chunk>& chunk) = 0;
 };
 
-}  // Fragmenter_Namespace
+}  // namespace Fragmenter_Namespace
 
 #endif  // _ABSTRACT_FRAGMENTER_H

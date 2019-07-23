@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-#include "QueryRunner.h"
+#include "../Catalog/Catalog.h"
+#include "../QueryRunner/QueryRunner.h"
 
 #include <boost/program_options.hpp>
+
+using QR = QueryRunner::QueryRunner;
 
 int main(int argc, char** argv) {
   std::string db_path;
@@ -26,8 +29,9 @@ int main(int argc, char** argv) {
   ExecutorDeviceType device_type{ExecutorDeviceType::GPU};
 
   boost::program_options::options_description desc("Options");
-  desc.add_options()(
-      "path", boost::program_options::value<std::string>(&db_path)->required(), "Directory path to Mapd catalogs")(
+  desc.add_options()("path",
+                     boost::program_options::value<std::string>(&db_path)->required(),
+                     "Directory path to Mapd catalogs")(
       "query", boost::program_options::value<std::string>(&query)->required(), "Query")(
       "iter", boost::program_options::value<size_t>(&iter), "Number of iterations")(
       "cpu", "Run on CPU (run on GPU by default)");
@@ -39,8 +43,11 @@ int main(int argc, char** argv) {
   boost::program_options::variables_map vm;
 
   try {
-    boost::program_options::store(
-        boost::program_options::command_line_parser(argc, argv).options(desc).positional(positionalOptions).run(), vm);
+    boost::program_options::store(boost::program_options::command_line_parser(argc, argv)
+                                      .options(desc)
+                                      .positional(positionalOptions)
+                                      .run(),
+                                  vm);
     boost::program_options::notify(vm);
   } catch (boost::program_options::error& err) {
     LOG(ERROR) << err.what();
@@ -55,9 +62,9 @@ int main(int argc, char** argv) {
     device_type = ExecutorDeviceType::CPU;
   }
 
-  std::unique_ptr<Catalog_Namespace::SessionInfo> session(get_session(db_path.c_str()));
+  QR::init(db_path.c_str());
   for (size_t i = 0; i < iter; ++i) {
-    run_multiple_agg(query, session, device_type, true, true);
+    QR::get()->runSQL(query, device_type, true, true);
   }
   return 0;
 }

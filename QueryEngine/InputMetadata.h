@@ -17,18 +17,18 @@
 #ifndef QUERYENGINE_INPUTMETADATA_H
 #define QUERYENGINE_INPUTMETADATA_H
 
-#include "InputDescriptors.h"
-#include "IteratorTable.h"
+#include "Descriptors/InputDescriptors.h"
+#include "RelAlgExecutionUnit.h"
 
 #include <unordered_map>
 
 namespace Catalog_Namespace {
 class Catalog;
-}  // Catalog_Namespace
+}  // namespace Catalog_Namespace
 
 class Executor;
 
-typedef std::unordered_map<int, const ResultPtr&> TemporaryTables;
+using TemporaryTables = std::unordered_map<int, const ResultSetPtr&>;
 
 struct InputTableInfo {
   int table_id;
@@ -50,8 +50,11 @@ class InputTableInfoCache {
 
 size_t get_frag_count_of_table(const int table_id, Executor* executor);
 
-std::vector<InputTableInfo> get_table_infos(const std::vector<InputDescriptor>& input_descs, Executor* executor);
+std::vector<InputTableInfo> get_table_infos(
+    const std::vector<InputDescriptor>& input_descs,
+    Executor* executor);
 
-std::vector<InputTableInfo> get_table_infos(const RelAlgExecutionUnit& ra_exe_unit, Executor* executor);
+std::vector<InputTableInfo> get_table_infos(const RelAlgExecutionUnit& ra_exe_unit,
+                                            Executor* executor);
 
 #endif  // QUERYENGINE_INPUTMETADATA_H

@@ -28,6 +28,7 @@
 // in sync.
 enum SQLOps {
   kEQ = 0,
+  kBW_EQ,
   kNE,
   kLT,
   kGT,
@@ -49,18 +50,44 @@ enum SQLOps {
   kARRAY_AT,
   kUNNEST,
   kFUNCTION,
-  kIN
+  kIN,
+  kOVERLAPS
 };
 
-#define IS_COMPARISON(X) ((X) == kEQ || (X) == kNE || (X) == kLT || (X) == kGT || (X) == kLE || (X) == kGE)
+#define IS_COMPARISON(X)                                                          \
+  ((X) == kEQ || (X) == kBW_EQ || (X) == kOVERLAPS || (X) == kNE || (X) == kLT || \
+   (X) == kGT || (X) == kLE || (X) == kGE)
 #define IS_LOGIC(X) ((X) == kAND || (X) == kOR)
-#define IS_ARITHMETIC(X) ((X) == kMINUS || (X) == kPLUS || (X) == kMULTIPLY || (X) == kDIVIDE || (X) == kMODULO)
-#define COMMUTE_COMPARISON(X) ((X) == kLT ? kGT : (X) == kLE ? kGE : (X) == kGT ? kLT : (X) == kGE ? kLE : (X))
-#define IS_UNARY(X) ((X) == kNOT || (X) == kUMINUS || (X) == kISNULL || (X) == kEXISTS || (X) == kCAST)
+#define IS_ARITHMETIC(X) \
+  ((X) == kMINUS || (X) == kPLUS || (X) == kMULTIPLY || (X) == kDIVIDE || (X) == kMODULO)
+#define COMMUTE_COMPARISON(X) \
+  ((X) == kLT ? kGT : (X) == kLE ? kGE : (X) == kGT ? kLT : (X) == kGE ? kLE : (X))
+#define IS_UNARY(X) \
+  ((X) == kNOT || (X) == kUMINUS || (X) == kISNULL || (X) == kEXISTS || (X) == kCAST)
+#define IS_EQUIVALENCE(X) ((X) == kEQ || (X) == kBW_EQ || (X) == kOVERLAPS)
 
 enum SQLQualifier { kONE, kANY, kALL };
 
-enum SQLAgg { kAVG, kMIN, kMAX, kSUM, kCOUNT, kAPPROX_COUNT_DISTINCT };
+enum SQLAgg { kAVG, kMIN, kMAX, kSUM, kCOUNT, kAPPROX_COUNT_DISTINCT, kSAMPLE };
+
+enum class SqlWindowFunctionKind {
+  ROW_NUMBER,
+  RANK,
+  DENSE_RANK,
+  PERCENT_RANK,
+  CUME_DIST,
+  NTILE,
+  LAG,
+  LEAD,
+  FIRST_VALUE,
+  LAST_VALUE,
+  AVG,
+  MIN,
+  MAX,
+  SUM,
+  COUNT,
+  SUM_INTERNAL  // For deserialization from Calcite only. Gets rewritten to a regular SUM.
+};
 
 enum SQLStmtType { kSELECT, kUPDATE, kINSERT, kDELETE, kCREATE_TABLE };
 

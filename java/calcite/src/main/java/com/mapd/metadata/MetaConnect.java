@@ -13,33 +13,56 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.mapd.metadata;
 
+import com.google.common.collect.ImmutableList;
+import com.mapd.calcite.parser.MapDParser;
+import com.mapd.calcite.parser.MapDTable;
+import com.mapd.calcite.parser.MapDUser;
+import com.mapd.calcite.parser.MapDView;
+import com.mapd.common.SockTransportProperties;
+import com.mapd.thrift.server.MapD;
 import com.mapd.thrift.server.TColumnType;
 import com.mapd.thrift.server.TDatumType;
 import com.mapd.thrift.server.TEncodingType;
+import com.mapd.thrift.server.TMapDException;
+import com.mapd.thrift.server.TTableDetails;
 import com.mapd.thrift.server.TTypeInfo;
+
+import org.apache.calcite.schema.Table;
+import org.apache.thrift.TException;
+import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.transport.TServerSocket;
+import org.apache.thrift.transport.TSocket;
+import org.apache.thrift.transport.TTransport;
+import org.apache.thrift.transport.TTransportException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  *
  * @author michael
  */
 public class MetaConnect {
-
   final static Logger MAPDLOGGER = LoggerFactory.getLogger(MetaConnect.class);
   private final String dataDir;
   private final String db;
+  private final MapDUser currentUser;
+  private final int mapdPort;
   private Connection catConn;
+  private final MapDParser parser;
 
   private static final int KBOOLEAN = 1;
   private static final int KCHAR = 2;
@@ -56,25 +79,44 @@ public class MetaConnect {
   private static final int KTEXT = 13;
   private static final int KDATE = 14;
   private static final int KARRAY = 15;
+  private static final int KINTERVAL_DAY_TIME = 16;
+  private static final int KINTERVAL_YEAR_MONTH = 17;
+  private static final int KPOINT = 18;
+  private static final int KLINESTRING = 19;
+  private static final int KPOLYGON = 20;
+  private static final int KMULTIPOLYGON = 21;
+  private static final int KTINYINT = 22;
 
-  public static void main(String args[]) {
-    MetaConnect x = new MetaConnect("/home/michael/mapd/mapd2/build/data/", "mapd");
-    x.connectToDBCatalog();
-    x.getTableDescriptor("flights");
-  }
+  private static volatile Map<String, Set<String>> MAPD_DATABASE_TO_TABLES =
+          new ConcurrentHashMap<>();
+  private static volatile Map<List<String>, Table> MAPD_TABLE_DETAILS =
+          new ConcurrentHashMap<>();
+  private final SockTransportProperties sock_transport_properties;
 
-  public MetaConnect(String dataDir, String db) {
+  public MetaConnect(int mapdPort,
+          String dataDir,
+          MapDUser currentMapDUser,
+          MapDParser parser,
+          SockTransportProperties skT) {
     this.dataDir = dataDir;
-    this.db = db;
+    if (currentMapDUser != null) {
+      this.db = currentMapDUser.getDB();
+    } else {
+      this.db = null;
+    }
+    this.currentUser = currentMapDUser;
+    this.mapdPort = mapdPort;
+    this.parser = parser;
+    this.sock_transport_properties = skT;
   }
 
-  public void connectToDBCatalog() {
+  private void connectToDBCatalog() {
     try {
-      //try {
+      // try {
       Class.forName("org.sqlite.JDBC");
     } catch (ClassNotFoundException ex) {
-      String err = "Could not find class for metadata connection; DB: '" + db +
-              "' data dir '" + dataDir + "', error was " + ex.getMessage();
+      String err = "Could not find class for metadata connection; DB: '" + db
+              + "' data dir '" + dataDir + "', error was " + ex.getMessage();
       MAPDLOGGER.error(err);
       throw new RuntimeException(err);
     }
@@ -82,70 +124,204 @@ public class MetaConnect {
     try {
       catConn = DriverManager.getConnection(connectURL);
     } catch (SQLException ex) {
-      String err = "Could not establish a connection for metadata; DB: '" + db +
-              "' data dir '" + dataDir + "', error was " + ex.getMessage();
+      String err = "Could not establish a connection for metadata; DB: '" + db
+              + "' data dir '" + dataDir + "', error was " + ex.getMessage();
       MAPDLOGGER.error(err);
       throw new RuntimeException(err);
     }
     MAPDLOGGER.debug("Opened database successfully");
   }
 
-  public Map<String, TColumnType> getTableDescriptor(String tableName) {
-    int id = -1;
+  private void disconnectFromDBCatalog() {
+    try {
+      catConn.close();
+    } catch (SQLException ex) {
+      String err = "Could not disconnect for metadata; DB: '" + db + "' data dir '"
+              + dataDir + "', error was " + ex.getMessage();
+      MAPDLOGGER.error(err);
+      throw new RuntimeException(err);
+    }
+  }
+
+  public Table getTable(String tableName) {
+    List<String> dbTable = ImmutableList.of(db.toUpperCase(), tableName.toUpperCase());
+    Table cTable = MAPD_TABLE_DETAILS.get(dbTable);
+    if (cTable != null) {
+      return cTable;
+    }
+
+    TTableDetails td = get_table_details(tableName);
+
+    if (td.getView_sql() == null || td.getView_sql().isEmpty()) {
+      MAPDLOGGER.debug("Processing a table");
+      Table rTable = new MapDTable(td);
+      MAPD_TABLE_DETAILS.putIfAbsent(dbTable, rTable);
+      return rTable;
+    } else {
+      MAPDLOGGER.debug("Processing a view");
+      Table rTable = new MapDView(getViewSql(tableName), td, parser);
+      MAPD_TABLE_DETAILS.putIfAbsent(dbTable, rTable);
+      return rTable;
+    }
+  }
+
+  public Set<String> getTables() {
+    Set<String> mSet = MAPD_DATABASE_TO_TABLES.get(db.toUpperCase());
+    if (mSet != null) {
+      return mSet;
+    }
+
+    if (mapdPort == -1) {
+      // use sql
+      connectToDBCatalog();
+      Set<String> ts = getTables_SQL();
+      disconnectFromDBCatalog();
+      MAPD_DATABASE_TO_TABLES.putIfAbsent(db.toUpperCase(), ts);
+      return ts;
+    }
+    // use thrift direct to local server
+    try {
+      TProtocol protocol = null;
+      TTransport transport =
+              sock_transport_properties.openClientTransport("localhost", mapdPort);
+      if (!transport.isOpen()) transport.open();
+      protocol = new TBinaryProtocol(transport);
+
+      MapD.Client client = new MapD.Client(protocol);
+
+      List<String> tablesList = client.get_tables(currentUser.getSession());
+      Set<String> ts = new HashSet<String>(tablesList.size());
+      for (String tableName : tablesList) {
+        ts.add(tableName);
+      }
+
+      transport.close();
+      MAPD_DATABASE_TO_TABLES.putIfAbsent(db.toUpperCase(), ts);
+      return ts;
+
+    } catch (TTransportException ex) {
+      MAPDLOGGER.error("TTransportException on port [" + mapdPort + "]");
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    } catch (TMapDException ex) {
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    } catch (TException ex) {
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    }
+  }
+
+  private Set<String> getTables_SQL() {
+    connectToDBCatalog();
+    Set<String> tableSet = new HashSet<String>();
+    Statement stmt = null;
+    ResultSet rs = null;
+    String sqlText = "";
+    try {
+      stmt = catConn.createStatement();
+
+      // get the tables
+      rs = stmt.executeQuery("SELECT name FROM mapd_tables ");
+      while (rs.next()) {
+        tableSet.add(rs.getString("name"));
+        /*--*/
+        MAPDLOGGER.debug("Object name = " + rs.getString("name"));
+      }
+      rs.close();
+      stmt.close();
+
+    } catch (Exception e) {
+      String err = "error trying to get all the tables, error was " + e.getMessage();
+      MAPDLOGGER.error(err);
+      throw new RuntimeException(err);
+    }
+    disconnectFromDBCatalog();
+    return tableSet;
+  }
+
+  public TTableDetails get_table_details(String tableName) {
+    if (mapdPort == -1) {
+      // use sql
+      connectToDBCatalog();
+      TTableDetails td = get_table_detail_SQL(tableName);
+      disconnectFromDBCatalog();
+      return td;
+    }
+    // use thrift direct to local server
+    try {
+      TProtocol protocol = null;
+
+      TTransport transport =
+              sock_transport_properties.openClientTransport("localhost", mapdPort);
+      if (!transport.isOpen()) transport.open();
+      protocol = new TBinaryProtocol(transport);
+
+      MapD.Client client = new MapD.Client(protocol);
+
+      TTableDetails td =
+              client.get_internal_table_details(currentUser.getSession(), tableName);
+
+      transport.close();
+
+      return td;
+
+    } catch (TTransportException ex) {
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    } catch (TMapDException ex) {
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    } catch (TException ex) {
+      MAPDLOGGER.error(ex.toString());
+      throw new RuntimeException(ex.toString());
+    }
+  }
+
+  public static final int get_physical_cols(int type) {
+    switch (type) {
+      case KPOINT:
+        return 1; // coords
+      case KLINESTRING:
+        return 2; // coords, bounds
+      case KPOLYGON:
+        return 4; // coords, ring_sizes, bounds, render_group
+      case KMULTIPOLYGON:
+        return 5; // coords, ring_sizes, poly_rings, bounds, render_group
+      default:
+        break;
+    }
+    return 0;
+  }
+
+  public static final boolean is_geometry(int type) {
+    return type == KPOINT || type == KLINESTRING || type == KPOLYGON
+            || type == KMULTIPOLYGON;
+  }
+
+  private TTableDetails get_table_detail_SQL(String tableName) {
+    TTableDetails td = new TTableDetails();
+    td.getRow_descIterator();
+    int id = getTableId(tableName);
+    if (id == -1) {
+      String err = "Table '" + tableName + "' does not exist for DB '" + db + "'";
+      MAPDLOGGER.error(err);
+      throw new RuntimeException(err);
+    }
+
+    // read data from table
     Statement stmt = null;
     ResultSet rs = null;
     try {
       stmt = catConn.createStatement();
-      rs = stmt.executeQuery(String.format("SELECT tableid FROM mapd_tables where name = '%s' COLLATE NOCASE;", tableName));
-      while (rs.next()) {
-        id = rs.getInt("tableid");
-        MAPDLOGGER.debug("ID = " + id);
-        MAPDLOGGER.debug("");
-      }
-      rs.close();
-      stmt.close();
-    } catch (Exception e) {
-      String err = "Error trying to read from metadata table mapd_tables;DB: " + db +
-              " data dir " + dataDir + ", error was " + e.getMessage();
-      MAPDLOGGER.error(err);
-      throw new RuntimeException(err);
-    } finally {
-      if (rs != null) {
-        try {
-          rs.close();
-        } catch (SQLException ex) {
-          String err = "Could not close resultset, error was " + ex.getMessage();
-          MAPDLOGGER.error(err);
-          throw new RuntimeException(err);
-        }
-      }
-      if (stmt != null) {
-        try {
-          stmt.close();
-        } catch (SQLException ex) {
-          String err = "Could not close stmt, error was " + ex.getMessage();
-          MAPDLOGGER.error(err);
-          throw new RuntimeException(err);
-        }
-      }
-    }
-    if (id == -1) {
-      String err = "Table '" + tableName + "' does not exist for DB '" + db + "'";
-      //MAPDLOGGER.error(err);
-      throw new RuntimeException(err);
-    }
-
-    Map<String, TColumnType> res = new LinkedHashMap<String, TColumnType>();
-
-    // read data from table
-    stmt = null;
-    rs = null;
-    try {
-      stmt = catConn.createStatement();
       MAPDLOGGER.debug("table id is " + id);
-      String query = String.format("SELECT * FROM mapd_columns where tableid = %d order by columnid;", id);
+      MAPDLOGGER.debug("table name is " + tableName);
+      String query = String.format(
+              "SELECT * FROM mapd_columns where tableid = %d and not is_deletedcol order by columnid;",
+              id);
       MAPDLOGGER.debug(query);
       rs = stmt.executeQuery(query);
+      int skip_physical_cols = 0;
       while (rs.next()) {
         String colName = rs.getString("name");
         MAPDLOGGER.debug("name = " + colName);
@@ -168,7 +344,7 @@ public class MetaConnect {
         TTypeInfo tti = new TTypeInfo();
         TDatumType tdt;
 
-        if (colType == KARRAY){
+        if (colType == KARRAY) {
           tti.is_array = true;
           tdt = typeToThrift(colSubType);
         } else {
@@ -185,7 +361,8 @@ public class MetaConnect {
         tct.col_name = colName;
         tct.col_type = tti;
 
-        res.put(colName, tct);
+        if (skip_physical_cols <= 0) skip_physical_cols = get_physical_cols(colType);
+        if (is_geometry(colType) || skip_physical_cols-- <= 0) td.addToRow_desc(tct);
       }
     } catch (Exception e) {
       String err = "error trying to read from mapd_columns, error was " + e.getMessage();
@@ -211,13 +388,17 @@ public class MetaConnect {
         }
       }
     }
-    return res;
+    if (isView(tableName)) {
+      td.setView_sqlIsSet(true);
+      td.setView_sql(getViewSqlViaSql(id));
+    }
+    return td;
   }
 
-  public int getTableId(String tableName) {
+  private int getTableId(String tableName) {
     Statement stmt = null;
     ResultSet rs = null;
-    int tableId = 0;
+    int tableId = -1;
     try {
       stmt = catConn.createStatement();
       rs = stmt.executeQuery(String.format(
@@ -231,21 +412,42 @@ public class MetaConnect {
       rs.close();
       stmt.close();
     } catch (Exception e) {
-      String err = "error trying to read from mapd_views, error was " + e.getMessage();
+      String err = "Error trying to read from metadata table mapd_tables;DB: " + db
+              + " data dir " + dataDir + ", error was " + e.getMessage();
       MAPDLOGGER.error(err);
       throw new RuntimeException(err);
+    } finally {
+      if (rs != null) {
+        try {
+          rs.close();
+        } catch (SQLException ex) {
+          String err = "Could not close resultset, error was " + ex.getMessage();
+          MAPDLOGGER.error(err);
+          throw new RuntimeException(err);
+        }
+      }
+      if (stmt != null) {
+        try {
+          stmt.close();
+        } catch (SQLException ex) {
+          String err = "Could not close stmt, error was " + ex.getMessage();
+          MAPDLOGGER.error(err);
+          throw new RuntimeException(err);
+        }
+      }
     }
     return (tableId);
   }
 
-  public boolean isView(String tableName) {
-    Statement stmt = null;
-    ResultSet rs = null;
+  private boolean isView(String tableName) {
+    Statement stmt;
+    ResultSet rs;
     int viewFlag = 0;
     try {
       stmt = catConn.createStatement();
       rs = stmt.executeQuery(String.format(
-              "SELECT isview FROM mapd_tables where name = '%s' COLLATE NOCASE;", tableName));
+              "SELECT isview FROM mapd_tables where name = '%s' COLLATE NOCASE;",
+              tableName));
       while (rs.next()) {
         viewFlag = rs.getInt("isview");
         MAPDLOGGER.debug("viewFlag = " + viewFlag);
@@ -261,18 +463,60 @@ public class MetaConnect {
     return (viewFlag == 1);
   }
 
-  public String getViewSql(String tableName) {
-    return getViewSql(getTableId(tableName));
+  private String getViewSql(String tableName) {
+    String sqlText;
+    if (mapdPort == -1) {
+      // use sql
+      connectToDBCatalog();
+      sqlText = getViewSqlViaSql(getTableId(tableName));
+      disconnectFromDBCatalog();
+    } else {
+      // use thrift direct to local server
+      try {
+        TProtocol protocol = null;
+
+        TTransport transport =
+                sock_transport_properties.openClientTransport("localhost", mapdPort);
+        if (!transport.isOpen()) transport.open();
+        protocol = new TBinaryProtocol(transport);
+
+        MapD.Client client = new MapD.Client(protocol);
+
+        TTableDetails td = client.get_table_details(currentUser.getSession(), tableName);
+
+        transport.close();
+
+        sqlText = td.getView_sql();
+
+      } catch (TTransportException ex) {
+        MAPDLOGGER.error(ex.toString());
+        throw new RuntimeException(ex.toString());
+      } catch (TMapDException ex) {
+        MAPDLOGGER.error(ex.toString());
+        throw new RuntimeException(ex.toString());
+      } catch (TException ex) {
+        MAPDLOGGER.error(ex.toString());
+        throw new RuntimeException(ex.toString());
+      }
+    }
+    /* return string without the sqlite's trailing semicolon */
+    if (sqlText.charAt(sqlText.length() - 1) == ';') {
+      return (sqlText.substring(0, sqlText.length() - 1));
+    } else {
+      return (sqlText);
+    }
   }
 
-  public String getViewSql(int tableId) {
-    Statement stmt = null;
-    ResultSet rs = null;
+  // we assume there is already a DB connection here
+  private String getViewSqlViaSql(int tableId) {
+    Statement stmt;
+    ResultSet rs;
     String sqlText = "";
     try {
       stmt = catConn.createStatement();
       rs = stmt.executeQuery(String.format(
-              "SELECT sql FROM mapd_views where tableid = '%s' COLLATE NOCASE;", tableId));
+              "SELECT sql FROM mapd_views where tableid = '%s' COLLATE NOCASE;",
+              tableId));
       while (rs.next()) {
         sqlText = rs.getString("sql");
         MAPDLOGGER.debug("View definition = " + sqlText);
@@ -290,18 +534,15 @@ public class MetaConnect {
       MAPDLOGGER.error(err);
       throw new RuntimeException(err);
     }
-    /* return string without the sqlite's trailing semicolon */
-    if (sqlText.charAt(sqlText.length() - 1) == ';') {
-      return (sqlText.substring(0, sqlText.length() - 1));
-    } else {
-      return (sqlText);
-    }
+    return sqlText;
   }
 
   private TDatumType typeToThrift(int type) {
     switch (type) {
       case KBOOLEAN:
         return TDatumType.BOOL;
+      case KTINYINT:
+        return TDatumType.TINYINT;
       case KSMALLINT:
         return TDatumType.SMALLINT;
       case KINT:
@@ -325,8 +566,57 @@ public class MetaConnect {
         return TDatumType.TIMESTAMP;
       case KDATE:
         return TDatumType.DATE;
+      case KINTERVAL_DAY_TIME:
+        return TDatumType.INTERVAL_DAY_TIME;
+      case KINTERVAL_YEAR_MONTH:
+        return TDatumType.INTERVAL_YEAR_MONTH;
+      case KPOINT:
+        return TDatumType.POINT;
+      case KLINESTRING:
+        return TDatumType.LINESTRING;
+      case KPOLYGON:
+        return TDatumType.POLYGON;
+      case KMULTIPOLYGON:
+        return TDatumType.MULTIPOLYGON;
       default:
         return null;
     }
+  }
+
+  public void updateMetaData(String schema, String table) {
+    // Check if table is specified, if not we are dropping an entire DB so need to
+    // remove all
+    // tables for that DB
+    if (table.equals("")) {
+      // Drop db and all tables
+      // iterate through all and remove matching schema
+      Set<List<String>> all = new HashSet<>(MAPD_TABLE_DETAILS.keySet());
+      for (List<String> keys : all) {
+        if (keys.get(0).equals(schema.toUpperCase())) {
+          MAPDLOGGER.debug("removing schema " + keys.get(0) + " table " + keys.get(1));
+          MAPD_TABLE_DETAILS.remove(keys);
+        }
+      }
+    } else {
+      MAPDLOGGER.debug("removing schema " + schema.toUpperCase() + " table "
+              + table.toUpperCase());
+      MAPD_TABLE_DETAILS.remove(
+              ImmutableList.of(schema.toUpperCase(), table.toUpperCase()));
+    }
+    // Invalidate views
+    Set<List<String>> all = new HashSet<>(MAPD_TABLE_DETAILS.keySet());
+    for (List<String> keys : all) {
+      if (keys.get(0).equals(schema.toUpperCase())) {
+        Table ttable = MAPD_TABLE_DETAILS.get(keys);
+        if (ttable instanceof MapDView) {
+          MAPDLOGGER.debug(
+                  "removing view in schema " + keys.get(0) + " view " + keys.get(1));
+          MAPD_TABLE_DETAILS.remove(keys);
+        }
+      }
+    }
+    // now remove schema
+    MAPDLOGGER.debug("removing schema " + schema.toUpperCase());
+    MAPD_DATABASE_TO_TABLES.remove(schema.toUpperCase());
   }
 }

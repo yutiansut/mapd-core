@@ -25,14 +25,14 @@
 #ifndef BUFFER_COMPACTION_H
 #define BUFFER_COMPACTION_H
 
+#include <cstdint>
 #include "../Shared/funcannotations.h"
-#include <stdint.h>
 
 #ifndef __CUDACC__
 #include <algorithm>
 #endif
 
-#define MAX_BYTE_WIDTH_SUPPORTED 8
+constexpr int8_t MAX_BYTE_WIDTH_SUPPORTED = 8;
 
 #ifndef __CUDACC__
 inline unsigned compact_byte_width(unsigned qw, unsigned low_bound) {

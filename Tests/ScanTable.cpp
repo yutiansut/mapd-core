@@ -22,22 +22,22 @@
  * Copyright (c) 2014 MapD Technologies, Inc.  All rights reserved.
  **/
 
-#include <iostream>
-#include <string>
-#include <cstring>
-#include <cstdlib>
-#include <cstdint>
+#include <boost/functional/hash.hpp>
 #include <cfloat>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <random>
-#include <boost/functional/hash.hpp>
+#include <string>
 #include "../Catalog/Catalog.h"
-#include "../DataMgr/DataMgr.h"
-#include "../Shared/sqltypes.h"
-#include "../Fragmenter/Fragmenter.h"
 #include "../Chunk/Chunk.h"
+#include "../DataMgr/DataMgr.h"
+#include "../Fragmenter/Fragmenter.h"
 #include "../Shared/measure.h"
+#include "../Shared/sqltypes.h"
 
 using namespace std;
 using namespace Catalog_Namespace;
@@ -45,7 +45,10 @@ using namespace Fragmenter_Namespace;
 using namespace Chunk_NS;
 using namespace Data_Namespace;
 
-void scan_chunk(const ChunkMetadata& chunk_metadata, const Chunk& chunk, size_t& hash, bool use_iter) {
+void scan_chunk(const ChunkMetadata& chunk_metadata,
+                const Chunk& chunk,
+                size_t& hash,
+                bool use_iter) {
   ChunkIter cit = chunk.begin_iterator(chunk_metadata, 0, 1);
   VarlenDatum vd;
   bool is_end;
@@ -53,12 +56,18 @@ void scan_chunk(const ChunkMetadata& chunk_metadata, const Chunk& chunk, size_t&
   std::hash<std::string> string_hash;
   int nth = 0;
   while (true) {
-    if (use_iter)
-      ChunkIter_get_next(&cit, true, &vd, &is_end);
-    else
-      ChunkIter_get_nth(&cit, nth++, true, &vd, &is_end);
-    if (is_end)
-      break;
+    if (use_iter) {
+      {
+        ChunkIter_get_next(&cit, true, &vd, &is_end);
+      }
+    } else {
+      { ChunkIter_get_nth(&cit, nth++, true, &vd, &is_end); }
+    }
+    if (is_end) {
+      {
+        break;
+      }
+    }
     switch (cd->columnType.get_type()) {
       case kSMALLINT:
         boost::hash_combine(hash, *(int16_t*)vd.pointer);
@@ -86,20 +95,9 @@ void scan_chunk(const ChunkMetadata& chunk_metadata, const Chunk& chunk, size_t&
         }
         break;
       case kTIME:
-      case kTIMESTAMP:
-        if (cd->columnType.get_dimension() == 0) {
-          if (sizeof(time_t) == 4)
-            boost::hash_combine(hash, *(int32_t*)vd.pointer);
-          else
-            boost::hash_combine(hash, *(int64_t*)vd.pointer);
-        } else
-          assert(false);  // not supported yet
-        break;
       case kDATE:
-        if (sizeof(time_t) == 4)
-          boost::hash_combine(hash, *(int32_t*)vd.pointer);
-        else
-          boost::hash_combine(hash, *(int64_t*)vd.pointer);
+      case kTIMESTAMP:
+        boost::hash_combine(hash, *(int64_t*)vd.pointer);
         break;
       default:
         assert(false);
@@ -109,7 +107,8 @@ void scan_chunk(const ChunkMetadata& chunk_metadata, const Chunk& chunk, size_t&
 
 vector<size_t> scan_table_return_hash(const string& table_name, const Catalog& cat) {
   const TableDescriptor* td = cat.getMetadataForTable(table_name);
-  list<const ColumnDescriptor*> cds = cat.getAllColumnMetadataForTable(td->tableId, false, true);
+  list<const ColumnDescriptor*> cds =
+      cat.getAllColumnMetadataForTable(td->tableId, false, true, true);
   vector<size_t> col_hashs(cds.size());
   int64_t elapsed_time = 0;
   size_t total_bytes = 0;
@@ -118,16 +117,18 @@ vector<size_t> scan_table_return_hash(const string& table_name, const Catalog& c
     int i = 0;
     for (auto cd : cds) {
       auto chunk_meta_it = frag.getChunkMetadataMapPhysical().find(cd->columnId);
-      ChunkKey chunk_key{cat.get_currentDB().dbId, td->tableId, cd->columnId, frag.fragmentId};
+      ChunkKey chunk_key{
+          cat.getCurrentDB().dbId, td->tableId, cd->columnId, frag.fragmentId};
       total_bytes += chunk_meta_it->second.numBytes;
       auto ms = measure<>::execution([&]() {
-        std::shared_ptr<Chunk> chunkp = Chunk::getChunk(cd,
-                                                        &cat.get_dataMgr(),
-                                                        chunk_key,
-                                                        CPU_LEVEL,
-                                                        frag.deviceIds[static_cast<int>(CPU_LEVEL)],
-                                                        chunk_meta_it->second.numBytes,
-                                                        chunk_meta_it->second.numElements);
+        std::shared_ptr<Chunk> chunkp =
+            Chunk::getChunk(cd,
+                            &cat.getDataMgr(),
+                            chunk_key,
+                            CPU_LEVEL,
+                            frag.deviceIds[static_cast<int>(CPU_LEVEL)],
+                            chunk_meta_it->second.numBytes,
+                            chunk_meta_it->second.numElements);
         scan_chunk(chunk_meta_it->second, *chunkp, col_hashs[i], true);
         // call Chunk destructor here
       });
@@ -135,14 +136,17 @@ vector<size_t> scan_table_return_hash(const string& table_name, const Catalog& c
       i++;
     }
   }
-  cout << "Scanned " << query_info.getPhysicalNumTuples() << " rows " << total_bytes << " bytes in " << elapsed_time
-       << " ms. at " << (double)total_bytes / (elapsed_time / 1000.0) / 1e6 << " MB/sec." << std::endl;
+  cout << "Scanned " << query_info.getPhysicalNumTuples() << " rows " << total_bytes
+       << " bytes in " << elapsed_time << " ms. at "
+       << (double)total_bytes / (elapsed_time / 1000.0) / 1e6 << " MB/sec." << std::endl;
   return col_hashs;
 }
 
-vector<size_t> scan_table_return_hash_non_iter(const string& table_name, const Catalog& cat) {
+vector<size_t> scan_table_return_hash_non_iter(const string& table_name,
+                                               const Catalog& cat) {
   const TableDescriptor* td = cat.getMetadataForTable(table_name);
-  list<const ColumnDescriptor*> cds = cat.getAllColumnMetadataForTable(td->tableId, false, true);
+  list<const ColumnDescriptor*> cds =
+      cat.getAllColumnMetadataForTable(td->tableId, false, true, true);
   vector<size_t> col_hashs(cds.size());
   Fragmenter_Namespace::TableInfo query_info = td->fragmenter->getFragmentsForQuery();
   int64_t elapsed_time = 0;
@@ -151,16 +155,18 @@ vector<size_t> scan_table_return_hash_non_iter(const string& table_name, const C
     int i = 0;
     for (auto cd : cds) {
       auto chunk_meta_it = frag.getChunkMetadataMapPhysical().find(cd->columnId);
-      ChunkKey chunk_key{cat.get_currentDB().dbId, td->tableId, cd->columnId, frag.fragmentId};
+      ChunkKey chunk_key{
+          cat.getCurrentDB().dbId, td->tableId, cd->columnId, frag.fragmentId};
       total_bytes += chunk_meta_it->second.numBytes;
       auto ms = measure<>::execution([&]() {
-        std::shared_ptr<Chunk> chunkp = Chunk::getChunk(cd,
-                                                        &cat.get_dataMgr(),
-                                                        chunk_key,
-                                                        CPU_LEVEL,
-                                                        frag.deviceIds[static_cast<int>(CPU_LEVEL)],
-                                                        chunk_meta_it->second.numBytes,
-                                                        chunk_meta_it->second.numElements);
+        std::shared_ptr<Chunk> chunkp =
+            Chunk::getChunk(cd,
+                            &cat.getDataMgr(),
+                            chunk_key,
+                            CPU_LEVEL,
+                            frag.deviceIds[static_cast<int>(CPU_LEVEL)],
+                            chunk_meta_it->second.numBytes,
+                            chunk_meta_it->second.numElements);
         scan_chunk(chunk_meta_it->second, *chunkp, col_hashs[i], false);
         // call Chunk destructor here
       });
@@ -168,7 +174,8 @@ vector<size_t> scan_table_return_hash_non_iter(const string& table_name, const C
       i++;
     }
   }
-  cout << "Scanned " << query_info.getPhysicalNumTuples() << " rows " << total_bytes << " bytes in " << elapsed_time
-       << " ms. at " << (double)total_bytes / (elapsed_time / 1000.0) / 1e6 << " MB/sec." << std::endl;
+  cout << "Scanned " << query_info.getPhysicalNumTuples() << " rows " << total_bytes
+       << " bytes in " << elapsed_time << " ms. at "
+       << (double)total_bytes / (elapsed_time / 1000.0) / 1e6 << " MB/sec." << std::endl;
   return col_hashs;
 }

@@ -16,11 +16,9 @@
 
 #include "StringDictionaryGenerations.h"
 
-#include <glog/logging.h>
-
-void StringDictionaryGenerations::setGeneration(const uint32_t id, const size_t generation) {
-  const auto it_ok = id_to_generation_.emplace(id, generation);
-  CHECK(it_ok.second);
+void StringDictionaryGenerations::setGeneration(const uint32_t id,
+                                                const size_t generation) {
+  id_to_generation_.emplace(id, generation);
 }
 
 ssize_t StringDictionaryGenerations::getGeneration(const uint32_t id) const {

@@ -16,7 +16,13 @@
 
 package com.mapd.bench;
 
-//STEP 1. Import required packages
+// STEP 1. Import required packages
+import com.omnisci.jdbc.OmniSciStatement;
+
+import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
@@ -24,20 +30,16 @@ import java.io.IOException;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
 
 public class Benchmark {
-
   final static Logger logger = LoggerFactory.getLogger(Benchmark.class);
 
   // JDBC driver name and database URL
-  static final String JDBC_DRIVER = "com.mapd.jdbc.MapDDriver";
-  static final String DB_URL = "jdbc:mapd:localhost:9091:mapd";
+  static final String JDBC_DRIVER = "com.omnisci.jdbc.OmniSciDriver";
+  static final String DB_URL = "jdbc:omnisci:localhost:6274:mapd";
 
-  //  Database credentials
-  static final String USER = "mapd";
+  // Database credentials
+  static final String USER = "admin";
   static final String PASS = "HyperInteractive";
 
   private String driver;
@@ -45,13 +47,36 @@ public class Benchmark {
   private String iUser;
   private String iPasswd;
 
-  private String headDescriptor = "%3s, %8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s";
-  private String header2 = String.format(headDescriptor, "QRY", "T-Avg", "T-Min", "T-Max", "T-85%",
-          "E-Avg", "E-Min", "E-Max", "E-85%","E-25%", "E-StdD",
-          "J-Avg", "J-Min", "J-Max", "J-85%",
-          "I-Avg", "I-Min", "I-Max", "I-85%",
-          "F-Exec", "F-jdbc", "F-iter", "ITER", "Total", "Account");
-  private String lineDescriptor = "Q%02d, %8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8d,%8d,%8d,%8d,%8d,%8d";
+  private String headDescriptor =
+          "%3s, %8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s,%8s";
+  private String header2 = String.format(headDescriptor,
+          "QRY",
+          "T-Avg",
+          "T-Min",
+          "T-Max",
+          "T-85%",
+          "E-Avg",
+          "E-Min",
+          "E-Max",
+          "E-85%",
+          "E-25%",
+          "E-StdD",
+          "J-Avg",
+          "J-Min",
+          "J-Max",
+          "J-85%",
+          "I-Avg",
+          "I-Min",
+          "I-Max",
+          "I-85%",
+          "F-Exec",
+          "F-jdbc",
+          "F-iter",
+          "ITER",
+          "Total",
+          "Account");
+  private String lineDescriptor =
+          "Q%02d, %8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8.1f,%8d,%8d,%8d,%8d,%8d,%8d";
 
   public static void main(String[] args) {
     Benchmark bm = new Benchmark();
@@ -59,10 +84,10 @@ public class Benchmark {
   }
 
   void doWork(String[] args, int query) {
-
-    //Grab parameters from args
+    // Grab parameters from args
     // parm0 number of iterations per query
-    // parm1 file containing sql queries {contains quoted query, expected result count]
+    // parm1 file containing sql queries {contains quoted query, expected result
+    // count]
     // parm2 optional JDBC Driver class name
     // parm3 optional DB URL
     // parm4 optionsl user
@@ -70,18 +95,17 @@ public class Benchmark {
     int iterations = Integer.valueOf(args[0]);
     logger.debug("Iterations per query is " + iterations);
 
-
     String queryFile = args[1];
 
-    //int expectedResults = Integer.valueOf(args[2]);
+    // int expectedResults = Integer.valueOf(args[2]);
     driver = (args.length > 2) ? args[2] : JDBC_DRIVER;
     url = (args.length > 3) ? args[3] : DB_URL;
     iUser = (args.length > 4) ? args[4] : USER;
     iPasswd = (args.length > 5) ? args[5] : PASS;
 
-    //register the driver
+    // register the driver
     try {
-      //Register JDBC driver
+      // Register JDBC driver
       Class.forName(driver);
     } catch (ClassNotFoundException ex) {
       logger.error("Could not load class " + driver + " " + ex.getMessage());
@@ -97,20 +121,19 @@ public class Benchmark {
       int qCount = 1;
 
       while ((sCurrentLine = br.readLine()) != null) {
-
-        int expected=0;
+        int expected = 0;
         String sqlQuery = null;
         // find the last comma and then grab the rest as sql
-        for (int i = sCurrentLine.length(); i > 0; i--){
-          if (sCurrentLine.charAt(i-1) == ',') {
+        for (int i = sCurrentLine.length(); i > 0; i--) {
+          if (sCurrentLine.charAt(i - 1) == ',') {
             // found the comma
             expected = Integer.valueOf(sCurrentLine.substring(i).trim());
-            sqlQuery = sCurrentLine.substring(0, i-1).trim().substring(1);
+            sqlQuery = sCurrentLine.substring(0, i - 1).trim().substring(1);
             break;
           }
         }
         // remove final "
-        sqlQuery = sqlQuery.substring(0, sqlQuery.length()-1);
+        sqlQuery = sqlQuery.substring(0, sqlQuery.length() - 1);
 
         System.out.println(String.format("Q%02d %s", qCount, sqlQuery));
 
@@ -128,10 +151,9 @@ public class Benchmark {
 
     // All done dump out results
     System.out.println(header2);
-    for(String s: resultArray){
+    for (String s : resultArray) {
       System.out.println(s);
     }
-
   }
 
   String executeQuery(String sql, int expected, int iterations, int queryNum) {
@@ -150,14 +172,13 @@ public class Benchmark {
     long totalTime = 0;
 
     try {
-      //Open a connection
+      // Open a connection
       logger.debug("Connecting to database url :" + url);
       conn = DriverManager.getConnection(url, iUser, iPasswd);
 
       long startTime = System.currentTimeMillis();
       for (int loop = 0; loop < iterations; loop++) {
-
-        //Execute a query
+        // Execute a query
         stmt = conn.createStatement();
 
         long timer = System.currentTimeMillis();
@@ -166,19 +187,21 @@ public class Benchmark {
         long executeTime = 0;
         long jdbcTime = 0;
 
-        // gather internal execute time for MapD as we are interested in that
-        if (driver.equals(JDBC_DRIVER)){
-          executeTime = stmt.getQueryTimeout();
+        // gather internal execute time for OmniSci as we are interested in that
+        if (driver.equals(JDBC_DRIVER)) {
+          executeTime = ((OmniSciStatement) stmt).getQueryInternalExecuteTime();
           jdbcTime = (System.currentTimeMillis() - timer) - executeTime;
         } else {
           jdbcTime = (System.currentTimeMillis() - timer);
           executeTime = 0;
         }
         // this is fake to get our intenal execute time.
-        logger.debug("Query Timeout/AKA internal Execution Time was " + stmt.getQueryTimeout() + " ms Elapsed time in JVM space was " + (System.currentTimeMillis() - timer) + "ms");
+        logger.debug("Query Timeout/AKA internal Execution Time was "
+                + stmt.getQueryTimeout() + " ms Elapsed time in JVM space was "
+                + (System.currentTimeMillis() - timer) + "ms");
 
         timer = System.currentTimeMillis();
-        //Extract data from result set
+        // Extract data from result set
         int resultCount = 0;
         while (rs.next()) {
           Object obj = rs.getObject(1);
@@ -190,7 +213,8 @@ public class Benchmark {
         long iterateTime = (System.currentTimeMillis() - timer);
 
         if (resultCount != expected) {
-          logger.error("Expect " + expected + " actual " + resultCount + " for query " + sql);
+          logger.error(
+                  "Expect " + expected + " actual " + resultCount + " for query " + sql);
           // don't run anymore
           break;
         }
@@ -207,34 +231,34 @@ public class Benchmark {
           statsTotal.addValue(jdbcTime + executeTime + iterateTime);
         }
 
-        //Clean-up environment
+        // Clean-up environment
         rs.close();
         stmt.close();
       }
       totalTime = System.currentTimeMillis() - startTime;
       conn.close();
     } catch (SQLException se) {
-      //Handle errors for JDBC
+      // Handle errors for JDBC
       se.printStackTrace();
     } catch (Exception e) {
-      //Handle errors for Class.forName
+      // Handle errors for Class.forName
       e.printStackTrace();
     } finally {
-      //finally block used to close resources
+      // finally block used to close resources
       try {
         if (stmt != null) {
           stmt.close();
         }
       } catch (SQLException se2) {
-      }// nothing we can do
+      } // nothing we can do
       try {
         if (conn != null) {
           conn.close();
         }
       } catch (SQLException se) {
         se.printStackTrace();
-      }//end finally try
-    }//end try
+      } // end finally try
+    } // end try
 
     return String.format(lineDescriptor,
             queryNum,
@@ -261,7 +285,6 @@ public class Benchmark {
             firstIterate,
             iterations,
             totalTime,
-            (long) statsTotal.getSum()+ firstExecute + firstJdbc + firstIterate);
-
+            (long) statsTotal.getSum() + firstExecute + firstJdbc + firstIterate);
   }
 }

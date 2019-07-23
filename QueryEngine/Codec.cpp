@@ -16,12 +16,12 @@
 
 #include "Codec.h"
 #include "LLVMGlobalContext.h"
+#include "Shared/Logger.h"
 
-#include <glog/logging.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instruction.h>
-#include <llvm/IR/Value.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Value.h>
 
 FixedWidthInt::FixedWidthInt(const size_t byte_width) : byte_width_{byte_width} {}
 
@@ -31,11 +31,15 @@ llvm::Instruction* FixedWidthInt::codegenDecode(llvm::Value* byte_stream,
   auto& context = getGlobalLLVMContext();
   auto f = module->getFunction("fixed_width_int_decode");
   CHECK(f);
-  llvm::Value* args[] = {byte_stream, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_), pos};
+  llvm::Value* args[] = {
+      byte_stream,
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_),
+      pos};
   return llvm::CallInst::Create(f, args);
 }
 
-FixedWidthUnsigned::FixedWidthUnsigned(const size_t byte_width) : byte_width_{byte_width} {}
+FixedWidthUnsigned::FixedWidthUnsigned(const size_t byte_width)
+    : byte_width_{byte_width} {}
 
 llvm::Instruction* FixedWidthUnsigned::codegenDecode(llvm::Value* byte_stream,
                                                      llvm::Value* pos,
@@ -43,7 +47,10 @@ llvm::Instruction* FixedWidthUnsigned::codegenDecode(llvm::Value* byte_stream,
   auto& context = getGlobalLLVMContext();
   auto f = module->getFunction("fixed_width_unsigned_decode");
   CHECK(f);
-  llvm::Value* args[] = {byte_stream, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_), pos};
+  llvm::Value* args[] = {
+      byte_stream,
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_),
+      pos};
   return llvm::CallInst::Create(f, args);
 }
 
@@ -56,10 +63,11 @@ llvm::Instruction* DiffFixedWidthInt::codegenDecode(llvm::Value* byte_stream,
   auto& context = getGlobalLLVMContext();
   auto f = module->getFunction("diff_fixed_width_int_decode");
   CHECK(f);
-  llvm::Value* args[] = {byte_stream,
-                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_),
-                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), baseline_),
-                         pos};
+  llvm::Value* args[] = {
+      byte_stream,
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_),
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), baseline_),
+      pos};
   return llvm::CallInst::Create(f, args);
 }
 
@@ -68,8 +76,27 @@ FixedWidthReal::FixedWidthReal(const bool is_double) : is_double_(is_double) {}
 llvm::Instruction* FixedWidthReal::codegenDecode(llvm::Value* byte_stream,
                                                  llvm::Value* pos,
                                                  llvm::Module* module) const {
-  auto f = module->getFunction(is_double_ ? "fixed_width_double_decode" : "fixed_width_float_decode");
+  auto f = module->getFunction(is_double_ ? "fixed_width_double_decode"
+                                          : "fixed_width_float_decode");
   CHECK(f);
   llvm::Value* args[] = {byte_stream, pos};
+  return llvm::CallInst::Create(f, args);
+}
+
+FixedWidthSmallDate::FixedWidthSmallDate(const size_t byte_width)
+    : byte_width_{byte_width}, null_val_{byte_width == 4 ? NULL_INT : NULL_SMALLINT} {}
+
+llvm::Instruction* FixedWidthSmallDate::codegenDecode(llvm::Value* byte_stream,
+                                                      llvm::Value* pos,
+                                                      llvm::Module* module) const {
+  auto& context = getGlobalLLVMContext();
+  auto f = module->getFunction("fixed_width_small_date_decode");
+  CHECK(f);
+  llvm::Value* args[] = {
+      byte_stream,
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), byte_width_),
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), null_val_),
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(context), ret_null_val_),
+      pos};
   return llvm::CallInst::Create(f, args);
 }

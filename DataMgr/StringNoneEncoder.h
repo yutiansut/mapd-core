@@ -23,11 +23,11 @@
  **/
 #ifndef STRING_NONE_ENCODER_H
 #define STRING_NONE_ENCODER_H
+#include "Shared/Logger.h"
 
-#include <vector>
-#include <string>
 #include <cassert>
-#include <glog/logging.h>
+#include <string>
+#include <vector>
 #include "AbstractBuffer.h"
 #include "ChunkMetadata.h"
 #include "Encoder.h"
@@ -36,43 +36,65 @@ using Data_Namespace::AbstractBuffer;
 
 class StringNoneEncoder : public Encoder {
  public:
-  StringNoneEncoder(AbstractBuffer* buffer) : Encoder(buffer), index_buf(nullptr), last_offset(-1), has_nulls(false) {}
+  StringNoneEncoder(AbstractBuffer* buffer)
+      : Encoder(buffer), index_buf(nullptr), last_offset(-1), has_nulls(false) {}
 
   size_t getNumElemsForBytesInsertData(const std::vector<std::string>* srcData,
                                        const int start_idx,
                                        const size_t numAppendElems,
-                                       const size_t byteLimit);
+                                       const size_t byteLimit,
+                                       const bool replicating = false);
 
-  ChunkMetadata appendData(int8_t*& srcData, const size_t numAppendElems) {
-    assert(false);  // should never be called for strings
-    ChunkMetadata chunkMetadata;
-    getMetadata(chunkMetadata);
-    return chunkMetadata;
+  ChunkMetadata appendData(int8_t*& srcData,
+                           const size_t numAppendElems,
+                           const SQLTypeInfo&,
+                           const bool replicating = false) override {
+    CHECK(false);  // should never be called for strings
+    return ChunkMetadata{};
   }
 
-  ChunkMetadata appendData(const std::vector<std::string>* srcData, const int start_idx, const size_t numAppendElems);
+  ChunkMetadata appendData(const std::vector<std::string>* srcData,
+                           const int start_idx,
+                           const size_t numAppendElems,
+                           const bool replicating = false);
 
-  void getMetadata(ChunkMetadata& chunkMetadata) {
+  void getMetadata(ChunkMetadata& chunkMetadata) override {
     Encoder::getMetadata(chunkMetadata);  // call on parent class
     chunkMetadata.chunkStats.min.stringval = nullptr;
     chunkMetadata.chunkStats.max.stringval = nullptr;
     chunkMetadata.chunkStats.has_nulls = has_nulls;
   }
 
-  void writeMetadata(FILE* f) {
+  // Only called from the executor for synthesized meta-information.
+  ChunkMetadata getMetadata(const SQLTypeInfo& ti) override {
+    auto chunk_stats = ChunkStats{};
+    chunk_stats.min.stringval = nullptr;
+    chunk_stats.max.stringval = nullptr;
+    chunk_stats.has_nulls = has_nulls;
+    ChunkMetadata chunk_metadata{ti, 0, 0, chunk_stats};
+    return chunk_metadata;
+  }
+
+  void updateStats(const int64_t, const bool) override { CHECK(false); }
+
+  void updateStats(const double, const bool) override { CHECK(false); }
+
+  void reduceStats(const Encoder&) override { CHECK(false); }
+
+  void writeMetadata(FILE* f) override {
     // assumes pointer is already in right place
-    fwrite((int8_t*)&numElems, sizeof(size_t), 1, f);
+    fwrite((int8_t*)&num_elems_, sizeof(size_t), 1, f);
     fwrite((int8_t*)&has_nulls, sizeof(bool), 1, f);
   }
 
-  void readMetadata(FILE* f) {
+  void readMetadata(FILE* f) override {
     // assumes pointer is already in right place
-    CHECK_NE(fread((int8_t*)&numElems, sizeof(size_t), size_t(1), f), size_t(0));
+    CHECK_NE(fread((int8_t*)&num_elems_, sizeof(size_t), size_t(1), f), size_t(0));
     CHECK_NE(fread((int8_t*)&has_nulls, sizeof(bool), size_t(1), f), size_t(0));
   }
 
-  void copyMetadata(const Encoder* copyFromEncoder) {
-    numElems = copyFromEncoder->numElems;
+  void copyMetadata(const Encoder* copyFromEncoder) override {
+    num_elems_ = copyFromEncoder->getNumElems();
     has_nulls = static_cast<const StringNoneEncoder*>(copyFromEncoder)->has_nulls;
   }
 

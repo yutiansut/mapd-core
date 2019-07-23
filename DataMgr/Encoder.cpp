@@ -15,17 +15,24 @@
  */
 
 #include "Encoder.h"
-#include "NoneEncoder.h"
-#include "FixedLengthEncoder.h"
-#include "StringNoneEncoder.h"
 #include "ArrayNoneEncoder.h"
-#include <glog/logging.h>
+#include "DateDaysEncoder.h"
+#include "FixedLengthArrayNoneEncoder.h"
+#include "FixedLengthEncoder.h"
+#include "NoneEncoder.h"
+#include "Shared/Logger.h"
+#include "StringNoneEncoder.h"
 
-Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeInfo sqlType) {
+Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer,
+                         const SQLTypeInfo sqlType) {
   switch (sqlType.get_compression()) {
     case kENCODING_NONE: {
       switch (sqlType.get_type()) {
         case kBOOLEAN: {
+          return new NoneEncoder<int8_t>(buffer);
+          break;
+        }
+        case kTINYINT: {
           return new NoneEncoder<int8_t>(buffer);
           break;
         }
@@ -55,15 +62,47 @@ Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeIn
         case kVARCHAR:
         case kCHAR:
           return new StringNoneEncoder(buffer);
-        case kARRAY:
+        case kARRAY: {
+          if (sqlType.get_size() > 0) {
+            return new FixedLengthArrayNoneEncoder(buffer, sqlType.get_size());
+          }
           return new ArrayNoneEncoder(buffer);
+        }
         case kTIME:
         case kTIMESTAMP:
         case kDATE:
-          return new NoneEncoder<time_t>(buffer);
-        default: { return 0; }
+          return new NoneEncoder<int64_t>(buffer);
+        case kPOINT:
+        case kLINESTRING:
+        case kPOLYGON:
+        case kMULTIPOLYGON:
+          return new StringNoneEncoder(buffer);
+        default: {
+          return 0;
+        }
       }
       break;
+    }
+    case kENCODING_DATE_IN_DAYS: {
+      switch (sqlType.get_type()) {
+        case kDATE:
+          switch (sqlType.get_comp_param()) {
+            case 0:
+            case 32:
+              return new DateDaysEncoder<int64_t, int32_t>(buffer);
+              break;
+            case 16:
+              return new DateDaysEncoder<int64_t, int16_t>(buffer);
+              break;
+            default:
+              return 0;
+              break;
+          }
+          break;
+        default:
+          return 0;
+          break;
+      }
     }
     case kENCODING_FIXED: {
       switch (sqlType.get_type()) {
@@ -122,7 +161,7 @@ Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeIn
         case kTIME:
         case kTIMESTAMP:
         case kDATE:
-          return new FixedLengthEncoder<time_t, int32_t>(buffer);
+          return new FixedLengthEncoder<int64_t, int32_t>(buffer);
           break;
         default: {
           return 0;
@@ -134,6 +173,9 @@ Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeIn
     case kENCODING_DICT: {
       if (sqlType.get_type() == kARRAY) {
         CHECK(IS_STRING(sqlType.get_subtype()));
+        if (sqlType.get_size() > 0) {
+          return new FixedLengthArrayNoneEncoder(buffer, sqlType.get_size());
+        }
         return new ArrayNoneEncoder(buffer);
       } else {
         CHECK(sqlType.is_string());
@@ -154,6 +196,19 @@ Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeIn
       }
       break;
     }
+    case kENCODING_GEOINT: {
+      switch (sqlType.get_type()) {
+        case kPOINT:
+        case kLINESTRING:
+        case kPOLYGON:
+        case kMULTIPOLYGON:
+          return new StringNoneEncoder(buffer);
+        default: {
+          return 0;
+        }
+      }
+      break;
+    }
     default: {
       return 0;
       break;
@@ -162,26 +217,15 @@ Encoder* Encoder::Create(Data_Namespace::AbstractBuffer* buffer, const SQLTypeIn
   return 0;
 }
 
+Encoder::Encoder(Data_Namespace::AbstractBuffer* buffer)
+    : num_elems_(0)
+    , buffer_(buffer)
+    , decimal_overflow_validator_(buffer ? buffer->sqlType : SQLTypeInfo())
+    , date_days_overflow_validator_(buffer ? buffer->sqlType : SQLTypeInfo()){};
+
 void Encoder::getMetadata(ChunkMetadata& chunkMetadata) {
   // chunkMetadata = metadataTemplate_; // invoke copy constructor
   chunkMetadata.sqlType = buffer_->sqlType;
   chunkMetadata.numBytes = buffer_->size();
-  chunkMetadata.numElements = numElems;
-}
-
-ChunkMetadata Encoder::getMetadata(const SQLTypeInfo& ti) {
-  CHECK(false);
-  return {};
-}
-
-void Encoder::updateStats(const int64_t, const bool) {
-  CHECK(false);
-}
-
-void Encoder::updateStats(const double, const bool) {
-  CHECK(false);
-}
-
-void Encoder::reduceStats(const Encoder&) {
-  CHECK(false);
+  chunkMetadata.numElements = num_elems_;
 }

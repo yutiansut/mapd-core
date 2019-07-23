@@ -27,12 +27,25 @@
 #endif
 
 #ifdef __CUDACC__
+#define GLOBAL __global__
+#else
+#define GLOBAL
+#endif
+
+#if defined(__CUDACC__) && __CUDACC_VER_MAJOR__ < 8
+#define STATIC_QUAL
+#else
+#define STATIC_QUAL static
+#endif
+
+#ifdef __CUDACC__
 #define FORCE_INLINE __forceinline__
 #else
 #define FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || (defined(__GNUC__) && defined(__SANITIZE_THREAD__)) || \
+    defined(WITH_JIT_DEBUG)
 #define ALWAYS_INLINE
 #else
 #define ALWAYS_INLINE __attribute__((always_inline))

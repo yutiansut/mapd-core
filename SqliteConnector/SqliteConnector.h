@@ -22,10 +22,10 @@
 #ifndef SQLITE_CONNECTOR
 #define SQLITE_CONNECTOR
 
+#include <boost/lexical_cast.hpp>
+#include <cassert>
 #include <string>
 #include <vector>
-#include <assert.h>
-#include <boost/lexical_cast.hpp>
 
 #include "sqlite3.h"
 
@@ -34,8 +34,19 @@ class SqliteConnector {
   SqliteConnector(const std::string& dbName, const std::string& dir = ".");
   ~SqliteConnector();
   void query(const std::string& queryString);
-  void query_with_text_params(const std::string& queryString, const std::vector<std::string>& text_param);
-  void query_with_text_param(const std::string& queryString, const std::string& text_param);
+
+  void query_with_text_params(std::string const& query_only) { query(query_only); }
+  template <typename STRING_CONTAINER>
+  void query_with_text_params(STRING_CONTAINER const& query_and_text_params) {
+    query_with_text_params(
+        *query_and_text_params.begin(),
+        std::vector<std::string>{std::next(query_and_text_params.begin()),
+                                 query_and_text_params.end()});
+  }
+  void query_with_text_params(const std::string& queryString,
+                              const std::vector<std::string>& text_param);
+  void query_with_text_param(const std::string& queryString,
+                             const std::string& text_param);
 
   size_t getNumRows() const { return numRows_; }
   size_t getNumCols() const { return numCols_; }

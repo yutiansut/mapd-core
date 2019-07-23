@@ -21,36 +21,47 @@
  *
  * Usage: <table> <database> <user> <password> [<num rows>] [hostname[:port]]
  * The program executes the following:
- * 1. connect to mapd_server at hostname:port (default: localhost:9091)
+ * 1. connect to omnisci_server at hostname:port (default: localhost:6274)
  *    with <database> <user> <password>
  * 2. get the table descriptor of <table>
  * 3. randomly generate tab-delimited data that can be imported to <table>
- * 4. disconnect from mapd_server
+ * 4. disconnect from omnisci_server
  *
  * Copyright (c) 2014 MapD Technologies, Inc.  All rights reserved.
  **/
 
-#include <cstring>
-#include <cstdlib>
-#include <string>
-#include <iostream>
-#include <cstdint>
 #include <cfloat>
-#include <random>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
+#include <iostream>
+#include <random>
+#include <string>
 
 // include files for Thrift and MapD Thrift Services
-#include "gen-cpp/MapD.h"
-#include <thrift/transport/TSocket.h>
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TBufferTransports.h>
+#include <thrift/transport/TSocket.h>
+#include "gen-cpp/MapD.h"
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
 using namespace ::apache::thrift::transport;
 
-// Thrift uses boost::shared_ptr instead of std::shared_ptr
+#ifdef HAVE_THRIFT_STD_SHAREDPTR
+#include <memory>
+namespace mapd {
+using std::make_shared;
+using std::shared_ptr;
+}  // namespace mapd
+#else
+#include <boost/make_shared.hpp>
+namespace mapd {
+using boost::make_shared;
 using boost::shared_ptr;
+}  // namespace mapd
+#endif  // HAVE_THRIFT_STD_SHAREDPTR
 
 namespace {
 // anonymous namespace for private functions
@@ -77,16 +88,18 @@ std::string gen_string() {
   std::uniform_int_distribution<> len_dist(0, max_str_len);
   int len = len_dist(random_gen);
   std::string s(len, ' ');
-  for (int i = 0; i < len; i++)
+  for (int i = 0; i < len; i++) {
     s[i] = chars[char_dist(random_gen)];
+  }
   return s;
 }
 
 // returns a random boolean as string
 std::string gen_bool() {
   std::uniform_int_distribution<int> dist(0, 1);
-  if (dist(random_gen) == 1)
+  if (dist(random_gen) == 1) {
     return "t";
+  }
   return "f";
 }
 
@@ -126,10 +139,11 @@ void data_gen(const TRowDescriptor& row_desc, const char* delimiter, int num_row
   for (int i = 0; i < num_rows; i++) {
     bool not_first = false;
     for (auto p = row_desc.begin(); p != row_desc.end(); ++p) {
-      if (not_first)
+      if (not_first) {
         std::cout << delimiter;
-      else
+      } else {
         not_first = true;
+      }
       switch (p->col_type.type) {
         case TDatumType::SMALLINT:
         case TDatumType::INT:
@@ -158,21 +172,26 @@ void data_gen(const TRowDescriptor& row_desc, const char* delimiter, int num_row
         case TDatumType::BOOL:
           std::cout << gen_bool();
           break;
+        default:
+          std::cout << "???";
+          break;
       }
     }
     std::cout << std::endl;
   }
 }
-}
+}  // namespace
 
 int main(int argc, char** argv) {
   std::string server_host("localhost");  // default to localhost
-  int port = 9091;                       // default port number
+  int port = 6274;                       // default port number
   int num_rows = 1000000;                // default number of rows to generate
   const char* delimiter = "\t";          // only support tab delimiter for now
 
   if (argc < 5) {
-    std::cout << "Usage: <table> <database> <user> <password> [<num rows>] [hostname[:port]]" << std::endl;
+    std::cout
+        << "Usage: <table> <database> <user> <password> [<num rows>] [hostname[:port]]"
+        << std::endl;
     return 1;
   }
   std::string table_name(argv[1]);
@@ -186,23 +205,24 @@ int main(int argc, char** argv) {
       char* host = strtok(argv[6], ":");
       char* portno = strtok(NULL, ":");
       server_host = host;
-      if (portno != NULL)
+      if (portno != NULL) {
         port = atoi(portno);
+      }
     }
   }
 
-  shared_ptr<TTransport> socket(new TSocket(server_host, port));
-  shared_ptr<TTransport> transport(new TBufferedTransport(socket));
-  shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+  mapd::shared_ptr<TTransport> socket(new TSocket(server_host, port));
+  mapd::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+  mapd::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
   MapDClient client(protocol);
   TSessionId session;
   try {
-    transport->open();                                     // open transport
-    client.connect(session, user_name, passwd, db_name);   // connect to mapd_server
+    transport->open();                                    // open transport
+    client.connect(session, user_name, passwd, db_name);  // connect to omnisci_server
     TTableDetails table_details;
     client.get_table_details(table_details, session, table_name);
     data_gen(table_details.row_desc, delimiter, num_rows);
-    client.disconnect(session);  // disconnect from mapd_server
+    client.disconnect(session);  // disconnect from omnisci_server
     transport->close();          // close transport
   } catch (TMapDException& e) {
     std::cerr << e.error_msg << std::endl;

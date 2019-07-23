@@ -15,10 +15,10 @@
  */
 
 #include "../StringDictionary/StringDictionary.h"
+#include "TestHelpers.h"
 
 #include <limits>
 
-#include <glog/logging.h>
 #include <gtest/gtest.h>
 
 #ifndef BASE_PATH
@@ -26,7 +26,7 @@
 #endif
 
 TEST(StringDictionary, AddAndGet) {
-  StringDictionary string_dict(BASE_PATH, false);
+  StringDictionary string_dict(BASE_PATH, false, false);
   auto id1 = string_dict.getOrAdd("foo bar");
   auto id2 = string_dict.getOrAdd("foo bar");
   ASSERT_EQ(id1, id2);
@@ -39,7 +39,7 @@ TEST(StringDictionary, AddAndGet) {
 }
 
 TEST(StringDictionary, Recover) {
-  StringDictionary string_dict(BASE_PATH);
+  StringDictionary string_dict(BASE_PATH, false, true);
   auto id1 = string_dict.getOrAdd("baz");
   ASSERT_EQ(1, id1);
   auto id2 = string_dict.getOrAdd("baz");
@@ -54,7 +54,7 @@ TEST(StringDictionary, Recover) {
 }
 
 TEST(StringDictionary, HandleEmpty) {
-  StringDictionary string_dict(BASE_PATH, false);
+  StringDictionary string_dict(BASE_PATH, false, false);
   auto id1 = string_dict.getOrAdd("");
   auto id2 = string_dict.getOrAdd("");
   ASSERT_EQ(id1, id2);
@@ -64,7 +64,7 @@ TEST(StringDictionary, HandleEmpty) {
 const int g_op_count{250000};
 
 TEST(StringDictionary, ManyAddsAndGets) {
-  StringDictionary string_dict(BASE_PATH, false);
+  StringDictionary string_dict(BASE_PATH, false, false);
   for (int i = 0; i < g_op_count; ++i) {
     CHECK_EQ(i, string_dict.getOrAdd(std::to_string(i)));
   }
@@ -77,7 +77,7 @@ TEST(StringDictionary, ManyAddsAndGets) {
 }
 
 TEST(StringDictionary, RecoverMany) {
-  StringDictionary string_dict(BASE_PATH, true);
+  StringDictionary string_dict(BASE_PATH, false, true);
   for (int i = 0; i < g_op_count; ++i) {
     CHECK_EQ(i, string_dict.getOrAdd(std::to_string(i)));
   }
@@ -87,7 +87,14 @@ TEST(StringDictionary, RecoverMany) {
 }
 
 int main(int argc, char** argv) {
+  TestHelpers::init_logger_stderr_only(argc, argv);
   testing::InitGoogleTest(&argc, argv);
-  auto err = RUN_ALL_TESTS();
+
+  int err{0};
+  try {
+    err = RUN_ALL_TESTS();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+  }
   return err;
 }

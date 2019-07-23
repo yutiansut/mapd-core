@@ -16,66 +16,76 @@
 
 #ifndef FIXED_LENGTH_ENCODER_H
 #define FIXED_LENGTH_ENCODER_H
-#include "Encoder.h"
-#include "AbstractBuffer.h"
-#include <stdexcept>
+#include "Shared/Logger.h"
+
 #include <iostream>
 #include <memory>
-#include <glog/logging.h>
+#include <stdexcept>
+#include "AbstractBuffer.h"
+#include "Encoder.h"
+
+#include <Shared/DatumFetchers.h>
 
 template <typename T, typename V>
 class FixedLengthEncoder : public Encoder {
  public:
   FixedLengthEncoder(Data_Namespace::AbstractBuffer* buffer)
-      : Encoder(buffer),
-        dataMin(std::numeric_limits<T>::max()),
-        dataMax(std::numeric_limits<T>::min()),
-        has_nulls(false) {}
+      : Encoder(buffer)
+      , dataMin(std::numeric_limits<T>::max())
+      , dataMax(std::numeric_limits<T>::min())
+      , has_nulls(false) {}
 
-  ChunkMetadata appendData(int8_t*& srcData, const size_t numAppendElems) {
+  ChunkMetadata appendData(int8_t*& srcData,
+                           const size_t numAppendElems,
+                           const SQLTypeInfo& ti,
+                           const bool replicating = false) override {
     T* unencodedData = reinterpret_cast<T*>(srcData);
-    auto encodedData = std::unique_ptr<V[]>(new V[numAppendElems]);
+    auto encodedData = std::make_unique<V[]>(numAppendElems);
     for (size_t i = 0; i < numAppendElems; ++i) {
-      // std::cout << "Unencoded: " << unencodedData[i] << std::endl;
-      // std::cout << "Min: " << dataMin << " Max: " <<  dataMax << std::endl;
-      encodedData.get()[i] = static_cast<V>(unencodedData[i]);
-      if (unencodedData[i] != encodedData.get()[i]) {
-        LOG(ERROR) << "Fixed encoding failed, Unencoded: " + std::to_string(unencodedData[i]) + " encoded: " +
-                          std::to_string(encodedData.get()[i]);
+      size_t ri = replicating ? 0 : i;
+      encodedData.get()[i] = static_cast<V>(unencodedData[ri]);
+      if (unencodedData[ri] != encodedData.get()[i]) {
+        decimal_overflow_validator_.validate(unencodedData[ri]);
+        LOG(ERROR) << "Fixed encoding failed, Unencoded: " +
+                          std::to_string(unencodedData[ri]) +
+                          " encoded: " + std::to_string(encodedData.get()[i]);
       } else {
-        T data = unencodedData[i];
-        if (data == std::numeric_limits<V>::min())
+        T data = unencodedData[ri];
+        if (data == std::numeric_limits<V>::min()) {
           has_nulls = true;
-        else {
+        } else {
+          decimal_overflow_validator_.validate(data);
           dataMin = std::min(dataMin, data);
           dataMax = std::max(dataMax, data);
         }
       }
     }
-    numElems += numAppendElems;
+    num_elems_ += numAppendElems;
 
     // assume always CPU_BUFFER?
     buffer_->append((int8_t*)(encodedData.get()), numAppendElems * sizeof(V));
     ChunkMetadata chunkMetadata;
     getMetadata(chunkMetadata);
-    srcData += numAppendElems * sizeof(T);
+    if (!replicating) {
+      srcData += numAppendElems * sizeof(T);
+    }
     return chunkMetadata;
   }
 
-  void getMetadata(ChunkMetadata& chunkMetadata) {
+  void getMetadata(ChunkMetadata& chunkMetadata) override {
     Encoder::getMetadata(chunkMetadata);  // call on parent class
     chunkMetadata.fillChunkStats(dataMin, dataMax, has_nulls);
   }
 
   // Only called from the executor for synthesized meta-information.
-  ChunkMetadata getMetadata(const SQLTypeInfo& ti) {
+  ChunkMetadata getMetadata(const SQLTypeInfo& ti) override {
     ChunkMetadata chunk_metadata{ti, 0, 0, ChunkStats{}};
     chunk_metadata.fillChunkStats(dataMin, dataMax, has_nulls);
     return chunk_metadata;
   }
 
   // Only called from the executor for synthesized meta-information.
-  void updateStats(const int64_t val, const bool is_null) {
+  void updateStats(const int64_t val, const bool is_null) override {
     if (is_null) {
       has_nulls = true;
     } else {
@@ -86,7 +96,7 @@ class FixedLengthEncoder : public Encoder {
   }
 
   // Only called from the executor for synthesized meta-information.
-  void updateStats(const double val, const bool is_null) {
+  void updateStats(const double val, const bool is_null) override {
     if (is_null) {
       has_nulls = true;
     } else {
@@ -97,7 +107,7 @@ class FixedLengthEncoder : public Encoder {
   }
 
   // Only called from the executor for synthesized meta-information.
-  void reduceStats(const Encoder& that) {
+  void reduceStats(const Encoder& that) override {
     const auto that_typed = static_cast<const FixedLengthEncoder<T, V>&>(that);
     if (that_typed.has_nulls) {
       has_nulls = true;
@@ -106,29 +116,45 @@ class FixedLengthEncoder : public Encoder {
     dataMax = std::max(dataMax, that_typed.dataMax);
   }
 
-  void copyMetadata(const Encoder* copyFromEncoder) {
-    numElems = copyFromEncoder->numElems;
-    auto castedEncoder = reinterpret_cast<const FixedLengthEncoder<T, V>*>(copyFromEncoder);
+  void copyMetadata(const Encoder* copyFromEncoder) override {
+    num_elems_ = copyFromEncoder->getNumElems();
+    auto castedEncoder =
+        reinterpret_cast<const FixedLengthEncoder<T, V>*>(copyFromEncoder);
     dataMin = castedEncoder->dataMin;
     dataMax = castedEncoder->dataMax;
     has_nulls = castedEncoder->has_nulls;
   }
 
-  void writeMetadata(FILE* f) {
+  void writeMetadata(FILE* f) override {
     // assumes pointer is already in right place
-    fwrite((int8_t*)&numElems, sizeof(size_t), 1, f);
+    fwrite((int8_t*)&num_elems_, sizeof(size_t), 1, f);
     fwrite((int8_t*)&dataMin, sizeof(T), 1, f);
     fwrite((int8_t*)&dataMax, sizeof(T), 1, f);
     fwrite((int8_t*)&has_nulls, sizeof(bool), 1, f);
   }
 
-  void readMetadata(FILE* f) {
+  void readMetadata(FILE* f) override {
     // assumes pointer is already in right place
-    fread((int8_t*)&numElems, sizeof(size_t), 1, f);
+    fread((int8_t*)&num_elems_, sizeof(size_t), 1, f);
     fread((int8_t*)&dataMin, 1, sizeof(T), f);
     fread((int8_t*)&dataMax, 1, sizeof(T), f);
     fread((int8_t*)&has_nulls, 1, sizeof(bool), f);
   }
+
+  bool resetChunkStats(const ChunkStats& stats) override {
+    const auto new_min = DatumFetcher::getDatumVal<T>(stats.min);
+    const auto new_max = DatumFetcher::getDatumVal<T>(stats.max);
+
+    if (dataMin == new_min && dataMax == new_max && has_nulls == stats.has_nulls) {
+      return false;
+    }
+
+    dataMin = new_min;
+    dataMax = new_max;
+    has_nulls = stats.has_nulls;
+    return true;
+  }
+
   T dataMin;
   T dataMax;
   bool has_nulls;

@@ -22,290 +22,534 @@
  */
 
 #include "Calcite.h"
+#include <thread>
+#include <utility>
+#include "Catalog/Catalog.h"
+#include "Shared/ConfigResolve.h"
+#include "Shared/Logger.h"
+#include "Shared/mapd_shared_ptr.h"
+#include "Shared/mapdpath.h"
 #include "Shared/measure.h"
-#include "../Shared/mapdpath.h"
 
-#include <glog/logging.h>
+#include "Shared/fixautotools.h"
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TSocket.h>
 #include <thrift/transport/TTransportUtils.h>
 
+#include "Shared/fixautotools.h"
+
 #include "gen-cpp/CalciteServer.h"
 
-using namespace std;
+using namespace rapidjson;
 using namespace apache::thrift;
 using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
-void Calcite::runJNI(int port, std::string data_dir, size_t calcite_max_mem) {
-  LOG(INFO) << "Creating Calcite Server local as JNI instance, jar expected in " << mapd_root_abs_path() << "/bin";
-  const int kNumOptions = 2;
-  std::string jar_file{"-Djava.class.path=" + mapd_root_abs_path() +
-                       "/bin/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar"};
-  std::string max_mem_setting{"-Xmx" + std::to_string(calcite_max_mem) + "m"};
-  JavaVMOption options[kNumOptions] = {{const_cast<char*>(max_mem_setting.c_str()), NULL},
-                                       {const_cast<char*>(jar_file.c_str()), NULL}};
+namespace {
+template <typename XDEBUG_OPTION,
+          typename REMOTE_DEBUG_OPTION,
+          typename... REMAINING_ARGS>
+int wrapped_execlp(char const* path,
+                   XDEBUG_OPTION&& x_debug,
+                   REMOTE_DEBUG_OPTION&& remote_debug,
+                   REMAINING_ARGS&&... standard_args) {
+  if (std::is_same<JVMRemoteDebugSelector, PreprocessorTrue>::value) {
+    return execlp(
+        path, x_debug, remote_debug, std::forward<REMAINING_ARGS>(standard_args)...);
+  }
+  return execlp(path, std::forward<REMAINING_ARGS>(standard_args)...);
+}
+}  // namespace
 
-  JavaVMInitArgs vm_args;
-  vm_args.version = JNI_VERSION_1_6;
-  vm_args.options = options;
-  vm_args.nOptions = sizeof(options) / sizeof(JavaVMOption);
-  assert(vm_args.nOptions == kNumOptions);
+static void start_calcite_server_as_daemon(const int mapd_port,
+                                           const int port,
+                                           const std::string& data_dir,
+                                           const size_t calcite_max_mem,
+                                           const std::string& ssl_trust_store,
+                                           const std::string& ssl_trust_password,
+                                           const std::string& udf_filename) {
+  std::string const xDebug = "-Xdebug";
+  std::string const remoteDebug =
+      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005";
+  std::string xmxP = "-Xmx" + std::to_string(calcite_max_mem) + "m";
+  std::string jarP = "-jar";
+  std::string jarD =
+      mapd_root_abs_path() + "/bin/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar";
+  std::string extensionsP = "-e";
+  std::string extensionsD = mapd_root_abs_path() + "/QueryEngine/";
+  std::string dataP = "-d";
+  std::string dataD = data_dir;
+  std::string localPortP = "-p";
+  std::string localPortD = std::to_string(port);
+  std::string mapdPortP = "-m";
+  std::string mapdPortD = std::to_string(mapd_port);
+  std::string mapdTrustStoreD = "-T";
+  std::string mapdTrustPasswd = "-P";
+  std::string mapdLogDirectory = "-DMAPD_LOG_DIR=" + data_dir;
+  std::string userDefinedFunctionsP = "";
+  std::string userDefinedFunctionsD = "";
 
-  JNIEnv* env;
-  int res = JNI_CreateJavaVM(&jvm_, reinterpret_cast<void**>(&env), &vm_args);
-  CHECK_EQ(res, JNI_OK);
+  if (!udf_filename.empty()) {
+    userDefinedFunctionsP += "-u";
+    userDefinedFunctionsD += udf_filename;
+  }
 
-  calciteDirect_ = env->FindClass("com/mapd/parser/server/CalciteDirect");
+  int pid = fork();
+  if (pid == 0) {
+    int i;
 
-  CHECK(calciteDirect_);
+    if (udf_filename.empty()) {
+      i = wrapped_execlp("java",
+                         xDebug.c_str(),
+                         remoteDebug.c_str(),
+                         xmxP.c_str(),
+                         mapdLogDirectory.c_str(),
+                         jarP.c_str(),
+                         jarD.c_str(),
+                         extensionsP.c_str(),
+                         extensionsD.c_str(),
+                         dataP.c_str(),
+                         dataD.c_str(),
+                         localPortP.c_str(),
+                         localPortD.c_str(),
+                         mapdPortP.c_str(),
+                         mapdPortD.c_str(),
+                         mapdTrustStoreD.c_str(),
+                         ssl_trust_store.c_str(),
+                         mapdTrustPasswd.c_str(),
+                         ssl_trust_password.c_str(),
+                         (char*)0);
+    } else {
+      i = wrapped_execlp("java",
+                         xDebug.c_str(),
+                         remoteDebug.c_str(),
+                         xmxP.c_str(),
+                         mapdLogDirectory.c_str(),
+                         jarP.c_str(),
+                         jarD.c_str(),
+                         extensionsP.c_str(),
+                         extensionsD.c_str(),
+                         dataP.c_str(),
+                         dataD.c_str(),
+                         localPortP.c_str(),
+                         localPortD.c_str(),
+                         mapdPortP.c_str(),
+                         mapdPortD.c_str(),
+                         mapdTrustStoreD.c_str(),
+                         ssl_trust_store.c_str(),
+                         mapdTrustPasswd.c_str(),
+                         ssl_trust_password.c_str(),
+                         userDefinedFunctionsP.c_str(),
+                         userDefinedFunctionsD.c_str(),
+                         (char*)0);
+    }
 
-  // now call the constructor
-  constructor_ = env->GetMethodID(calciteDirect_, "<init>", "(ILjava/lang/String;Ljava/lang/String;)V");
-  CHECK(constructor_);
-
-  // create the new calciteDirect via call to constructor
-  const auto extension_functions_ast_file = mapd_root_abs_path() + "/QueryEngine/ExtensionFunctions.ast";
-  calciteDirectObject_ = env->NewGlobalRef(env->NewObject(calciteDirect_,
-                                                          constructor_,
-                                                          port,
-                                                          env->NewStringUTF(data_dir.c_str()),
-                                                          env->NewStringUTF(extension_functions_ast_file.c_str())));
-  CHECK(calciteDirectObject_);
-
-  // get all the methods we will need for calciteDirect;
-  processMID_ = env->GetMethodID(calciteDirect_,
-                                 "process",
-                                 "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZ)Lcom/"
-                                 "mapd/parser/server/CalciteReturn;");
-  CHECK(processMID_);
-
-  // get all the methods we will need for calciteDirect;
-  updateMetadataMID_ = env->GetMethodID(calciteDirect_,
-                                        "updateMetadata",
-                                        "(Ljava/lang/String;Ljava/lang/String;)"
-                                        "Lcom/mapd/parser/server/CalciteReturn;");
-  CHECK(updateMetadataMID_);
-
-  getExtensionFunctionWhitelistMID_ =
-      env->GetMethodID(calciteDirect_, "getExtensionFunctionWhitelist", "()Ljava/lang/String;");
-  CHECK(getExtensionFunctionWhitelistMID_);
-
-  // get all the methods we will need to process the calcite results
-  jclass calcite_return_class = env->FindClass("com/mapd/parser/server/CalciteReturn");
-  CHECK(calcite_return_class);
-
-  hasFailedMID_ = env->GetMethodID(calcite_return_class, "hasFailed", "()Z");
-  CHECK(hasFailedMID_);
-  getElapsedTimeMID_ = env->GetMethodID(calcite_return_class, "getElapsedTime", "()J");
-  CHECK(getElapsedTimeMID_);
-  getTextMID_ = env->GetMethodID(calcite_return_class, "getText", "()Ljava/lang/String;");
-  CHECK(getTextMID_);
+    if (i) {
+      int errsv = errno;
+      LOG(FATAL) << "Failed to start Calcite server [errno=" << errsv
+                 << "]: " << strerror(errsv);
+    } else {
+      LOG(INFO) << "Successfully started Calcite server";
+    }
+  }
 }
 
-void Calcite::runServer(int port, std::string data_dir) {
-  LOG(INFO) << "Remote calcite server";
-  server_available_ = true;
-  jni_ = false;
-  // check server is responding
-  boost::shared_ptr<TTransport> socket(new TSocket("localhost", port));
-  boost::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
-  boost::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
-  client.reset(new CalciteServerClient(protocol));
-
+std::pair<mapd::shared_ptr<CalciteServerClient>, mapd::shared_ptr<TTransport>> get_client(
+    int port) {
+  mapd::shared_ptr<TTransport> socket(new TSocket("localhost", port));
+  mapd::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
   try {
     transport->open();
 
-    auto ms = measure<>::execution([&]() { client->ping(); });
+  } catch (TException& tx) {
+    throw tx;
+  }
+  mapd::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+  mapd::shared_ptr<CalciteServerClient> client;
+  client.reset(new CalciteServerClient(protocol));
+  std::pair<mapd::shared_ptr<CalciteServerClient>, mapd::shared_ptr<TTransport>> ret;
+  return std::make_pair(client, transport);
+}
 
-    LOG(INFO) << "ping took " << ms << " ms " << endl;
+void Calcite::runServer(const int mapd_port,
+                        const int port,
+                        const std::string& data_dir,
+                        const size_t calcite_max_mem,
+                        const std::string& udf_filename) {
+  LOG(INFO) << "Running calcite server as a daemon";
+
+  // ping server to see if for any reason there is an orphaned one
+  int ping_time = ping();
+  if (ping_time > -1) {
+    // we have an orphaned server shut it down
+    LOG(ERROR)
+        << "Appears to be orphaned Calcite serve already running, shutting it down";
+    LOG(ERROR) << "Please check that you are not trying to run two servers on same port";
+    LOG(ERROR) << "Attempting to shutdown orphaned Calcite server";
+    try {
+      auto clientP = get_client(remote_calcite_port_);
+      clientP.first->shutdown();
+      clientP.second->close();
+      LOG(ERROR) << "orphaned Calcite server shutdown";
+
+    } catch (TException& tx) {
+      LOG(ERROR) << "Failed to shutdown orphaned Calcite server, reason: " << tx.what();
+    }
+  }
+
+  // start the calcite server as a seperate process
+  start_calcite_server_as_daemon(mapd_port,
+                                 port,
+                                 data_dir,
+                                 calcite_max_mem,
+                                 ssl_trust_store_,
+                                 ssl_trust_password_,
+                                 udf_filename);
+
+  // check for new server for 5 seconds max
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  for (int i = 2; i < 50; i++) {
+    int ping_time = ping();
+    if (ping_time > -1) {
+      LOG(INFO) << "Calcite server start took " << i * 100 << " ms ";
+      LOG(INFO) << "ping took " << ping_time << " ms ";
+      server_available_ = true;
+      return;
+    } else {
+      // wait 100 ms
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  server_available_ = false;
+  LOG(FATAL) << "No calcite remote server running on port " << port;
+}
+
+// ping existing server
+// return -1 if no ping response
+int Calcite::ping() {
+  try {
+    auto ms = measure<>::execution([&]() {
+      auto clientP = get_client(remote_calcite_port_);
+      clientP.first->ping();
+      clientP.second->close();
+    });
+    return ms;
 
   } catch (TException& tx) {
-    LOG(ERROR) << tx.what() << endl;
+    return -1;
+  }
+}
+
+Calcite::Calcite(const int mapd_port,
+                 const int calcite_port,
+                 const std::string& data_dir,
+                 const size_t calcite_max_mem,
+                 const std::string& session_prefix,
+                 const std::string& udf_filename)
+    : server_available_(false), session_prefix_(session_prefix) {
+  init(mapd_port, calcite_port, data_dir, calcite_max_mem, udf_filename);
+}
+
+void Calcite::init(const int mapd_port,
+                   const int calcite_port,
+                   const std::string& data_dir,
+                   const size_t calcite_max_mem,
+                   const std::string& udf_filename) {
+  LOG(INFO) << "Creating Calcite Handler,  Calcite Port is " << calcite_port
+            << " base data dir is " << data_dir;
+  if (calcite_port < 0) {
+    CHECK(false) << "JNI mode no longer supported.";
+  }
+  if (calcite_port == 0) {
+    // dummy process for initdb
+    remote_calcite_port_ = calcite_port;
     server_available_ = false;
-    LOG(ERROR) << "No calcite remote server running on port " << port;
-  }
-}
-
-Calcite::Calcite(int port, std::string data_dir, size_t calcite_max_mem)
-    : server_available_(false), jni_(true), jvm_(NULL) {
-  LOG(INFO) << "Creating Calcite Handler,  Calcite Port is " << port << " base data dir is " << data_dir;
-  if (port == -1) {
-    runJNI(port, data_dir, calcite_max_mem);
   } else {
-    remote_calcite_port_ = port;
-    runServer(port, data_dir);
+    remote_calcite_port_ = calcite_port;
+    runServer(mapd_port, calcite_port, data_dir, calcite_max_mem, udf_filename);
+    server_available_ = true;
   }
 }
 
-JNIEnv* Calcite::checkJNIConnection() {
-  JNIEnv* env;
-  int res = jvm_->GetEnv((void**)&env, JNI_VERSION_1_6);
-  if (res != JNI_OK) {
-    JavaVMAttachArgs args;
-    args.version = JNI_VERSION_1_6;  // choose your JNI version
-    args.name = NULL;                // you might want to give the java thread a name
-    args.group = NULL;               // you might want to assign the java thread to a ThreadGroup
-    int res = jvm_->AttachCurrentThread((void**)&env, &args);
-    if (res != JNI_OK) {
-      throw std::runtime_error("Failed to create a JNI interface pointer");
-    }
-  }
-  CHECK(calciteDirectObject_);
-  CHECK(processMID_);
-  CHECK(updateMetadataMID_);
-
-  return env;
+Calcite::Calcite(const MapDParameters& mapd_parameter,
+                 const std::string& data_dir,
+                 const std::string& session_prefix,
+                 const std::string& udf_filename)
+    : ssl_trust_store_(mapd_parameter.ssl_trust_store)
+    , ssl_trust_password_(mapd_parameter.ssl_trust_password)
+    , session_prefix_(session_prefix) {
+  init(mapd_parameter.omnisci_server_port,
+       mapd_parameter.calcite_port,
+       data_dir,
+       mapd_parameter.calcite_max_mem,
+       udf_filename);
 }
 
-void Calcite::updateMetadata(string catalog, string table) {
-  if (jni_) {
-    JNIEnv* env = checkJNIConnection();
-    jobject process_result;
+void Calcite::updateMetadata(std::string catalog, std::string table) {
+  if (server_available_) {
     auto ms = measure<>::execution([&]() {
-      process_result = env->CallObjectMethod(calciteDirectObject_,
-                                             updateMetadataMID_,
-                                             env->NewStringUTF(catalog.c_str()),
-                                             env->NewStringUTF(table.c_str()));
-
+      auto clientP = get_client(remote_calcite_port_);
+      clientP.first->updateMetadata(catalog, table);
+      clientP.second->close();
     });
-    if (env->ExceptionCheck()) {
-      LOG(ERROR) << "Exception occurred ";
-      env->ExceptionDescribe();
-      LOG(ERROR) << "Exception occurred " << env->ExceptionOccurred();
-      throw std::runtime_error("Calcite::updateMetadata failed");
-    }
-    LOG(INFO) << "Time to updateMetadata " << ms << " (ms)" << endl;
+    LOG(INFO) << "Time to updateMetadata " << ms << " (ms)";
   } else {
-    if (server_available_) {
-      auto ms = measure<>::execution([&]() { client->updateMetadata(catalog, table); });
-      LOG(INFO) << "Time to updateMetadata " << ms << " (ms)" << endl;
-    } else {
-      LOG(INFO) << "Not routing to Calcite, server is not up and JNI not available" << endl;
+    LOG(INFO) << "Not routing to Calcite, server is not up";
+  }
+}
+
+void checkPermissionForTables(const Catalog_Namespace::SessionInfo& session_info,
+                              std::vector<std::string> tableOrViewNames,
+                              AccessPrivileges tablePrivs,
+                              AccessPrivileges viewPrivs) {
+  Catalog_Namespace::Catalog& catalog = session_info.getCatalog();
+
+  for (auto tableOrViewName : tableOrViewNames) {
+    const TableDescriptor* tableMeta =
+        catalog.getMetadataForTable(tableOrViewName, false);
+
+    if (!tableMeta) {
+      throw std::runtime_error("unknown table of view: " + tableOrViewName);
+    }
+
+    DBObjectKey key;
+    key.dbId = catalog.getCurrentDB().dbId;
+    key.permissionType = tableMeta->isView ? DBObjectType::ViewDBObjectType
+                                           : DBObjectType::TableDBObjectType;
+    key.objectId = tableMeta->tableId;
+    AccessPrivileges privs = tableMeta->isView ? viewPrivs : tablePrivs;
+    DBObject dbobject(key, privs, tableMeta->userId);
+    std::vector<DBObject> privObjects{dbobject};
+
+    if (!privs.hasAny()) {
+      throw std::runtime_error("Operation not supported for object " + tableOrViewName);
+    }
+
+    if (!Catalog_Namespace::SysCatalog::instance().checkPrivileges(
+            session_info.get_currentUser(), privObjects)) {
+      throw std::runtime_error("Violation of access privileges: user " +
+                               session_info.get_currentUser().userName +
+                               " has no proper privileges for object " + tableOrViewName);
     }
   }
 }
 
-string Calcite::process(string user,
-                        string passwd,
-                        string catalog,
-                        string sql_string,
-                        const bool legacy_syntax,
-                        const bool is_explain) {
+TPlanResult Calcite::process(
+    const Catalog_Namespace::SessionInfo& session_info,
+    const std::string sql_string,
+    const std::vector<TFilterPushDownInfo>& filter_push_down_info,
+    const bool legacy_syntax,
+    const bool is_explain,
+    const bool is_view_optimize) {
+  TPlanResult result = processImpl(session_info,
+                                   sql_string,
+                                   filter_push_down_info,
+                                   legacy_syntax,
+                                   is_explain,
+                                   is_view_optimize);
+
+  AccessPrivileges NOOP;
+
+  if (!is_explain) {
+    // check the individual tables
+    checkPermissionForTables(session_info,
+                             result.primary_accessed_objects.tables_selected_from,
+                             AccessPrivileges::SELECT_FROM_TABLE,
+                             AccessPrivileges::SELECT_FROM_VIEW);
+    checkPermissionForTables(session_info,
+                             result.primary_accessed_objects.tables_inserted_into,
+                             AccessPrivileges::INSERT_INTO_TABLE,
+                             NOOP);
+    checkPermissionForTables(session_info,
+                             result.primary_accessed_objects.tables_updated_in,
+                             AccessPrivileges::UPDATE_IN_TABLE,
+                             NOOP);
+    checkPermissionForTables(session_info,
+                             result.primary_accessed_objects.tables_deleted_from,
+                             AccessPrivileges::DELETE_FROM_TABLE,
+                             NOOP);
+  }
+
+  return result;
+}
+
+std::vector<TCompletionHint> Calcite::getCompletionHints(
+    const Catalog_Namespace::SessionInfo& session_info,
+    const std::vector<std::string>& visible_tables,
+    const std::string sql_string,
+    const int cursor) {
+  std::vector<TCompletionHint> hints;
+  auto& cat = session_info.getCatalog();
+  const auto user = session_info.get_currentUser().userName;
+  const auto session = session_info.get_session_id();
+  const auto catalog = cat.getCurrentDB().dbName;
+  auto client = get_client(remote_calcite_port_);
+  client.first->getCompletionHints(
+      hints, user, session, catalog, visible_tables, sql_string, cursor);
+  return hints;
+}
+
+std::vector<std::string> Calcite::get_db_objects(const std::string ra) {
+  std::vector<std::string> v_db_obj;
+  Document document;
+  document.Parse(ra.c_str());
+  const Value& rels = document["rels"];
+  CHECK(rels.IsArray());
+  for (auto& v : rels.GetArray()) {
+    std::string relOp(v["relOp"].GetString());
+    if (!relOp.compare("EnumerableTableScan")) {
+      std::string x;
+      auto t = v["table"].GetArray();
+      x = t[1].GetString();
+      v_db_obj.push_back(x);
+    }
+  }
+
+  return v_db_obj;
+}
+
+TPlanResult Calcite::processImpl(
+    const Catalog_Namespace::SessionInfo& session_info,
+    const std::string sql_string,
+    const std::vector<TFilterPushDownInfo>& filter_push_down_info,
+    const bool legacy_syntax,
+    const bool is_explain,
+    const bool is_view_optimize) {
+  auto& cat = session_info.getCatalog();
+  std::string user = session_info.get_currentUser().userName;
+  std::string session = session_info.get_session_id();
+  if (!session_prefix_.empty()) {
+    // preprend session prefix, if present
+    session = session_prefix_ + "/" + session;
+  }
+  std::string catalog = cat.getCurrentDB().dbName;
+
   LOG(INFO) << "User " << user << " catalog " << catalog << " sql '" << sql_string << "'";
-  if (jni_) {
-    JNIEnv* env = checkJNIConnection();
-    jboolean legacy = legacy_syntax;
-    jobject process_result;
-    auto ms = measure<>::execution([&]() {
-      process_result = env->CallObjectMethod(calciteDirectObject_,
-                                             processMID_,
-                                             env->NewStringUTF(user.c_str()),
-                                             env->NewStringUTF(passwd.c_str()),
-                                             env->NewStringUTF(catalog.c_str()),
-                                             env->NewStringUTF(sql_string.c_str()),
-                                             legacy,
-                                             is_explain);
+  TPlanResult ret;
+  if (server_available_) {
+    try {
+      auto ms = measure<>::execution([&]() {
+        auto clientP = get_client(remote_calcite_port_);
+        clientP.first->process(ret,
+                               user,
+                               session,
+                               catalog,
+                               sql_string,
+                               filter_push_down_info,
+                               legacy_syntax,
+                               is_explain,
+                               is_view_optimize);
+        clientP.second->close();
+      });
 
-    });
-    if (env->ExceptionCheck()) {
-      LOG(ERROR) << "Exception occurred ";
-      env->ExceptionDescribe();
-      LOG(ERROR) << "Exception occurred " << env->ExceptionOccurred();
-      throw std::runtime_error("Calcite::process failed");
+      // LOG(INFO) << ret.plan_result;
+      LOG(INFO) << "Time in Thrift "
+                << (ms > ret.execution_time_ms ? ms - ret.execution_time_ms : 0)
+                << " (ms), Time in Java Calcite server " << ret.execution_time_ms
+                << " (ms)";
+    } catch (InvalidParseRequest& e) {
+      throw std::invalid_argument(e.whyUp);
+    } catch (const std::exception& ex) {
+      LOG(FATAL)
+          << "Error occurred trying to communicate with calcite server, the error was: '"
+          << ex.what() << "', omnisci_server restart will be required";
+      return ret;  // satisfy return-type warning
     }
-    CHECK(process_result);
-    long java_time = env->CallLongMethod(process_result, getElapsedTimeMID_);
-
-    LOG(INFO) << "Time marshalling in JNI " << (ms > java_time ? ms - java_time : 0) << " (ms), Time in Java Calcite  "
-              << java_time << " (ms)" << endl;
-    return handle_java_return(env, process_result);
   } else {
-    if (server_available_) {
-      TPlanResult ret;
-      try {
-        auto ms = measure<>::execution(
-            [&]() { client->process(ret, user, passwd, catalog, sql_string, legacy_syntax, is_explain); });
-
-        LOG(INFO) << ret.plan_result << endl;
-        LOG(INFO) << "Time in Thrift " << (ms > ret.execution_time_ms ? ms - ret.execution_time_ms : 0)
-                  << " (ms), Time in Java Calcite server " << ret.execution_time_ms << " (ms)" << endl;
-        return ret.plan_result;
-      } catch (InvalidParseRequest& e) {
-        throw std::invalid_argument(e.whyUp);
-      }
-    } else {
-      LOG(INFO) << "Not routing to Calcite, server is not up and JNI not available" << endl;
-      return "";
-    }
+    LOG(INFO) << "Not routing to Calcite, server is not up";
+    ret.plan_result = "";
   }
+  return ret;
 }
 
-string Calcite::handle_java_return(JNIEnv* env, jobject process_result) {
-  CHECK(process_result);
-  CHECK(getTextMID_);
-  jstring s = (jstring)env->CallObjectMethod(process_result, getTextMID_);
-  CHECK(s);
-  // convert the Java String to use it in C
-  jboolean iscopy;
-  const char* text = env->GetStringUTFChars(s, &iscopy);
+std::string Calcite::getExtensionFunctionWhitelist() {
+  if (server_available_) {
+    TPlanResult ret;
+    std::string whitelist;
 
-  bool failed = env->CallBooleanMethod(process_result, hasFailedMID_);
-  if (failed) {
-    LOG(ERROR) << "Calcite process failed " << text;
-    string retText(text);
-    env->ReleaseStringUTFChars(s, text);
-    env->DeleteLocalRef(process_result);
-    jvm_->DetachCurrentThread();
-    throw std::invalid_argument(retText);
-  }
-  string retText(text);
-  env->ReleaseStringUTFChars(s, text);
-  env->DeleteLocalRef(process_result);
-  jvm_->DetachCurrentThread();
-  return retText;
-}
-
-string Calcite::getExtensionFunctionWhitelist() {
-  if (jni_) {
-    JNIEnv* env = checkJNIConnection();
-    const auto whitelist_result =
-        static_cast<jstring>(env->CallObjectMethod(calciteDirectObject_, getExtensionFunctionWhitelistMID_));
-    if (env->ExceptionCheck()) {
-      LOG(ERROR) << "Exception occurred ";
-      env->ExceptionDescribe();
-      LOG(ERROR) << "Exception occurred " << env->ExceptionOccurred();
-      throw std::runtime_error("Calcite::getExtensionFunctionWhitelist failed");
-    }
-    CHECK(whitelist_result);
-    jboolean iscopy;
-    const char* whitelist_cstr = env->GetStringUTFChars(whitelist_result, &iscopy);
-    string whitelist(whitelist_cstr);
-    env->ReleaseStringUTFChars(whitelist_result, whitelist_cstr);
-    env->DeleteLocalRef(whitelist_result);
-    jvm_->DetachCurrentThread();
+    auto clientP = get_client(remote_calcite_port_);
+    clientP.first->getExtensionFunctionWhitelist(whitelist);
+    clientP.second->close();
+    VLOG(1) << whitelist;
     return whitelist;
   } else {
-    if (server_available_) {
-      TPlanResult ret;
-      string whitelist;
-      client->getExtensionFunctionWhitelist(whitelist);
-      LOG(INFO) << whitelist << endl;
-      return whitelist;
-    } else {
-      LOG(INFO) << "Not routing to Calcite, server is not up and JNI not available" << endl;
-      return "";
-    }
+    LOG(FATAL) << "Not routing to Calcite, server is not up";
+    return "";
   }
   CHECK(false);
   return "";
 }
 
-Calcite::~Calcite() {
-  LOG(INFO) << "Destroy Calcite Class" << std::endl;
-  if (jvm_) {
-    jvm_->DestroyJavaVM();
+std::string Calcite::getUserDefinedFunctionWhitelist() {
+  if (server_available_) {
+    TPlanResult ret;
+    std::string whitelist;
+
+    auto clientP = get_client(remote_calcite_port_);
+    clientP.first->getUserDefinedFunctionWhitelist(whitelist);
+    clientP.second->close();
+    VLOG(1) << "User defined functions whitelist loaded from Calcite: " << whitelist;
+    return whitelist;
+  } else {
+    LOG(FATAL) << "Not routing to Calcite, server is not up";
+    return "";
   }
-  LOG(INFO) << "After java destroy: ";
+  UNREACHABLE();
+  return "";
+}
+
+void Calcite::close_calcite_server(bool log) {
+  std::call_once(shutdown_once_flag_,
+                 [this, log]() { this->inner_close_calcite_server(log); });
+}
+
+void Calcite::inner_close_calcite_server(bool log) {
+  if (server_available_) {
+    LOG_IF(INFO, log) << "Shutting down Calcite server";
+    try {
+      auto clientP = get_client(remote_calcite_port_);
+      clientP.first->shutdown();
+      clientP.second->close();
+    } catch (const std::exception& e) {
+      if (std::string(e.what()) != "connect() failed: Connection refused" &&
+          std::string(e.what()) != "No more data to read.") {
+        std::cerr << "Error shutting down Calcite server: " << e.what();
+      }  // else Calcite already shut down
+    }
+    LOG_IF(INFO, log) << "shut down Calcite";
+    server_available_ = false;
+  }
+}
+
+Calcite::~Calcite() {
+  close_calcite_server(false);
+}
+
+std::string Calcite::getRuntimeUserDefinedFunctionWhitelist() {
+  if (server_available_) {
+    TPlanResult ret;
+    std::string whitelist;
+    auto clientP = get_client(remote_calcite_port_);
+    clientP.first->getRuntimeUserDefinedFunctionWhitelist(whitelist);
+    clientP.second->close();
+    VLOG(1) << "Runtime user defined functions whitelist loaded from Calcite: "
+            << whitelist;
+    return whitelist;
+  } else {
+    LOG(FATAL) << "Not routing to Calcite, server is not up";
+    return "";
+  }
+  UNREACHABLE();
+  return "";
+}
+
+void Calcite::setRuntimeUserDefinedFunction(std::string udf_string) {
+  if (server_available_) {
+    auto clientP = get_client(remote_calcite_port_);
+    clientP.first->setRuntimeUserDefinedFunction(udf_string);
+    clientP.second->close();
+  } else {
+    LOG(FATAL) << "Not routing to Calcite, server is not up";
+  }
 }

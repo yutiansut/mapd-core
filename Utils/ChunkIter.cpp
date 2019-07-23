@@ -21,7 +21,12 @@
 
 #include "ChunkIter.h"
 
-DEVICE static void decompress(const SQLTypeInfo& ti, int8_t* compressed, VarlenDatum* result, Datum* datum) {
+#include <cstdlib>
+
+DEVICE static void decompress(const SQLTypeInfo& ti,
+                              int8_t* compressed,
+                              VarlenDatum* result,
+                              Datum* datum) {
   switch (ti.get_type()) {
     case kSMALLINT:
       result->length = sizeof(int16_t);
@@ -100,7 +105,21 @@ DEVICE static void decompress(const SQLTypeInfo& ti, int8_t* compressed, VarlenD
     case kDATE:
       switch (ti.get_compression()) {
         case kENCODING_FIXED:
-          datum->timeval = (time_t) * (int32_t*)compressed;
+          datum->bigintval = (int64_t) * (int32_t*)compressed;
+          break;
+        case kENCODING_DATE_IN_DAYS:
+          switch (ti.get_comp_param()) {
+            case 0:
+            case 32:
+              datum->bigintval = (int64_t) * (int32_t*)compressed;
+              break;
+            case 16:
+              datum->bigintval = (int64_t) * (int16_t*)compressed;
+              break;
+            default:
+              assert(false);
+              break;
+          }
           break;
         case kENCODING_RL:
         case kENCODING_DIFF:
@@ -112,8 +131,8 @@ DEVICE static void decompress(const SQLTypeInfo& ti, int8_t* compressed, VarlenD
         default:
           assert(false);
       }
-      result->length = sizeof(time_t);
-      result->pointer = (int8_t*)&datum->timeval;
+      result->length = sizeof(int64_t);
+      result->pointer = (int8_t*)&datum->bigintval;
       break;
     default:
       assert(false);
@@ -125,7 +144,10 @@ void ChunkIter_reset(ChunkIter* it) {
   it->current_pos = it->start_pos;
 }
 
-DEVICE void ChunkIter_get_next(ChunkIter* it, bool uncompress, VarlenDatum* result, bool* is_end) {
+DEVICE void ChunkIter_get_next(ChunkIter* it,
+                               bool uncompress,
+                               VarlenDatum* result,
+                               bool* is_end) {
   if (it->current_pos >= it->end_pos) {
     *is_end = true;
     result->length = 0;
@@ -137,17 +159,17 @@ DEVICE void ChunkIter_get_next(ChunkIter* it, bool uncompress, VarlenDatum* resu
 
   if (it->skip_size > 0) {
     // for fixed-size
-    if (uncompress && it->type_info.get_compression() != kENCODING_NONE) {
+    if (uncompress && (it->type_info.get_compression() != kENCODING_NONE)) {
       decompress(it->type_info, it->current_pos, result, &it->datum);
     } else {
-      result->length = it->skip_size;
+      result->length = static_cast<size_t>(it->skip_size);
       result->pointer = it->current_pos;
       result->is_null = it->type_info.is_null(result->pointer);
     }
     it->current_pos += it->skip * it->skip_size;
   } else {
     StringOffsetT offset = *(StringOffsetT*)it->current_pos;
-    result->length = *((StringOffsetT*)it->current_pos + 1) - offset;
+    result->length = static_cast<size_t>(*((StringOffsetT*)it->current_pos + 1) - offset);
     result->pointer = it->second_buf + offset;
     // @TODO(wei) treat zero length as null for now
     result->is_null = (result->length == 0);
@@ -156,7 +178,11 @@ DEVICE void ChunkIter_get_next(ChunkIter* it, bool uncompress, VarlenDatum* resu
 }
 
 // @brief get nth element in Chunk.  Does not change ChunkIter state
-DEVICE void ChunkIter_get_nth(ChunkIter* it, int n, bool uncompress, VarlenDatum* result, bool* is_end) {
+DEVICE void ChunkIter_get_nth(ChunkIter* it,
+                              int n,
+                              bool uncompress,
+                              VarlenDatum* result,
+                              bool* is_end) {
   if (static_cast<size_t>(n) >= it->num_elems || n < 0) {
     *is_end = true;
     result->length = 0;
@@ -169,17 +195,17 @@ DEVICE void ChunkIter_get_nth(ChunkIter* it, int n, bool uncompress, VarlenDatum
   if (it->skip_size > 0) {
     // for fixed-size
     int8_t* current_pos = it->start_pos + n * it->skip_size;
-    if (uncompress && it->type_info.get_compression() != kENCODING_NONE) {
+    if (uncompress && (it->type_info.get_compression() != kENCODING_NONE)) {
       decompress(it->type_info, current_pos, result, &it->datum);
     } else {
-      result->length = it->skip_size;
+      result->length = static_cast<size_t>(it->skip_size);
       result->pointer = current_pos;
       result->is_null = it->type_info.is_null(result->pointer);
     }
   } else {
     int8_t* current_pos = it->start_pos + n * sizeof(StringOffsetT);
     StringOffsetT offset = *(StringOffsetT*)current_pos;
-    result->length = *((StringOffsetT*)current_pos + 1) - offset;
+    result->length = static_cast<size_t>(*((StringOffsetT*)current_pos + 1) - offset);
     result->pointer = it->second_buf + offset;
     // @TODO(wei) treat zero length as null for now
     result->is_null = (result->length == 0);
@@ -200,15 +226,25 @@ DEVICE void ChunkIter_get_nth(ChunkIter* it, int n, ArrayDatum* result, bool* is
   if (it->skip_size > 0) {
     // for fixed-size
     int8_t* current_pos = it->start_pos + n * it->skip_size;
-    result->length = it->skip_size;
+    result->length = static_cast<size_t>(it->skip_size);
     result->pointer = current_pos;
-    result->is_null = it->type_info.is_null(result->pointer);
+    result->is_null = false;  // TODO: add a check for a NULL fixlen array
   } else {
-    int8_t* current_pos = it->start_pos + n * sizeof(StringOffsetT);
-    StringOffsetT offset = *(StringOffsetT*)current_pos;
-    result->length = *((StringOffsetT*)current_pos + 1) - offset;
-    result->pointer = it->second_buf + offset;
-    // @TODO(wei) treat zero length as null for now
-    result->is_null = (result->length == 0);
+    int8_t* current_pos = it->start_pos + n * sizeof(ArrayOffsetT);
+    int8_t* next_pos = current_pos + sizeof(ArrayOffsetT);
+    ArrayOffsetT offset = *(ArrayOffsetT*)current_pos;
+    ArrayOffsetT next_offset = *(ArrayOffsetT*)next_pos;
+    if (next_offset < 0) {  // Encoded NULL array
+      result->length = 0;
+      result->pointer = NULL;
+      result->is_null = true;
+    } else {
+      if (offset < 0) {
+        offset = -offset;  // Previous array may have been NULL, remove negativity
+      }
+      result->length = static_cast<size_t>(next_offset - offset);
+      result->pointer = it->second_buf + offset;
+      result->is_null = false;
+    }
   }
 }

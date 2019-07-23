@@ -17,8 +17,10 @@
 #ifndef CHUNKMETADATA_H
 #define CHUNKMETADATA_H
 
+#include <cstddef>
 #include "../Shared/sqltypes.h"
-#include <stddef.h>
+
+#include "Shared/Logger.h"
 
 struct ChunkStats {
   Datum min;
@@ -37,6 +39,11 @@ struct ChunkMetadata {
     chunkStats.has_nulls = has_nulls;
     switch (sqlType.get_type()) {
       case kBOOLEAN: {
+        chunkStats.min.tinyintval = min;
+        chunkStats.max.tinyintval = max;
+        break;
+      }
+      case kTINYINT: {
         chunkStats.min.tinyintval = min;
         chunkStats.max.tinyintval = max;
         break;
@@ -61,8 +68,8 @@ struct ChunkMetadata {
       case kTIME:
       case kTIMESTAMP:
       case kDATE: {
-        chunkStats.min.timeval = min;
-        chunkStats.max.timeval = max;
+        chunkStats.min.bigintval = min;
+        chunkStats.max.bigintval = max;
         break;
       }
       case kFLOAT: {
@@ -83,7 +90,9 @@ struct ChunkMetadata {
           chunkStats.max.intval = max;
         }
         break;
-      default: { break; }
+      default: {
+        break;
+      }
     }
   }
 
@@ -91,6 +100,14 @@ struct ChunkMetadata {
     chunkStats.has_nulls = has_nulls;
     chunkStats.min = min;
     chunkStats.max = max;
+  }
+
+  bool operator==(const ChunkMetadata& that) const {
+    return sqlType == that.sqlType && numBytes == that.numBytes &&
+           numElements == that.numElements &&
+           DatumEqual(chunkStats.min, that.chunkStats.min, sqlType) &&
+           DatumEqual(chunkStats.max, that.chunkStats.max, sqlType) &&
+           chunkStats.has_nulls == that.chunkStats.has_nulls;
   }
 };
 

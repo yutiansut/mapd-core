@@ -31,39 +31,90 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <time.h>
+#include "TimeGM.h"
+#include <boost/algorithm/string.hpp>
+#include <cmath>
+#include <ctime>
 
 /* Number of days per month (except for February in leap years). */
-static const int monoff[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+// static const int monoff[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 
-static int is_leap_year(int year) {
+int TimeGM::is_leap_year(int year) {
   return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
 }
 
-static int leap_days(int y1, int y2) {
+int TimeGM::leap_days(int y1, int y2) {
   --y1;
   --y2;
   return (y2 / 4 - y1 / 4) - (y2 / 100 - y1 / 100) + (y2 / 400 - y1 / 400);
 }
 
+time_t TimeGM::parse_fractional_seconds(uint64_t sfrac,
+                                        const int ntotal,
+                                        const SQLTypeInfo& ti) {
+  int dimen = ti.get_dimension();
+  int nfrac = log10(sfrac) + 1;
+  if (ntotal - nfrac > dimen) {
+    return 0;
+  }
+  if (ntotal >= 0 && ntotal < dimen) {
+    sfrac *= pow(10, dimen - ntotal);
+  } else if (ntotal > dimen) {
+    sfrac /= pow(10, ntotal - dimen);
+  }
+  return sfrac;
+}
+
+time_t TimeGM::parse_meridians(const time_t& timeval,
+                               const char* p,
+                               const uint32_t& hour,
+                               const SQLTypeInfo& ti) {
+  char meridies[20];
+  if (sscanf(p, "%*d %s", meridies) != 1) {
+    if (sscanf(p, "%s", meridies) != 1) {
+      return timeval;
+    };
+  }
+  if (boost::iequals(std::string(meridies), "pm") ||
+      boost::iequals(std::string(meridies), "p.m.") ||
+      boost::iequals(std::string(meridies), "p.m")) {
+    return hour == 12 ? timeval
+                      : timeval + kSecsPerHalfDay *
+                                      static_cast<int64_t>(pow(10, ti.get_dimension()));
+  } else if (boost::iequals(std::string(meridies), "am") ||
+             boost::iequals(std::string(meridies), "a.m.") ||
+             boost::iequals(std::string(meridies), "a.m")) {
+    return hour == 12 ? timeval - kSecsPerHalfDay *
+                                      static_cast<int64_t>(pow(10, ti.get_dimension()))
+                      : timeval;
+  } else {
+    return timeval;
+  }
+}
+
 /*
  * Code adapted from Python 2.4.1 sources (Lib/calendar.py).
  */
-time_t my_timegm(const struct tm* tm) {
-  int year;
+time_t TimeGM::my_timegm_days(const struct tm* tm) {
+  int32_t year;
+  time_t days;
+  year = 1900 + tm->tm_year;
+  days = 365 * (year - 1970) + leap_days(1970, year);
+  days += monoff[tm->tm_mon];
+  if (tm->tm_mon > 1 && is_leap_year(year)) {
+    ++days;
+  }
+  days += tm->tm_mday - 1;
+  return days;
+}
+
+time_t TimeGM::my_timegm(const struct tm* tm) {
   time_t days;
   time_t hours;
   time_t minutes;
   time_t seconds;
 
-  year = 1900 + tm->tm_year;
-  days = 365 * (year - 1970) + leap_days(1970, year);
-  days += monoff[tm->tm_mon];
-
-  if (tm->tm_mon > 1 && is_leap_year(year))
-    ++days;
-  days += tm->tm_mday - 1;
-
+  days = my_timegm_days(tm);
   hours = days * 24 + tm->tm_hour;
   minutes = hours * 60 + tm->tm_min;
   seconds = minutes * 60 + tm->tm_sec;
@@ -71,4 +122,13 @@ time_t my_timegm(const struct tm* tm) {
   seconds -= tm->tm_gmtoff;
 
   return seconds;
+}
+
+time_t TimeGM::my_timegm(const struct tm* tm, const time_t& fsc, const SQLTypeInfo& ti) {
+  time_t sec;
+
+  sec = my_timegm(tm) * static_cast<int64_t>(pow(10, ti.get_dimension()));
+  sec += fsc;
+
+  return sec;
 }

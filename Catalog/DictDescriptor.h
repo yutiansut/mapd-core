@@ -20,6 +20,7 @@
 #include <cassert>
 #include <memory>
 #include <string>
+
 #include "../Shared/sqltypes.h"
 #include "../StringDictionary/StringDictionary.h"
 
@@ -30,19 +31,48 @@
  */
 
 struct DictDescriptor {
-  int dictId;
+  DictRef dictRef;
   std::string dictName;
   int dictNBits;
   bool dictIsShared;
   std::string dictFolderPath;
+  int refcount;
+  bool dictIsTemp;
   std::shared_ptr<StringDictionary> stringDict;
-  DictDescriptor(int id, const std::string& name, int nbits, bool shared, std::string& fname)
-      : dictId(id),
-        dictName(name),
-        dictNBits(nbits),
-        dictIsShared(shared),
-        dictFolderPath(fname),
-        stringDict(nullptr) {}
+  DictDescriptor(DictRef dict_ref,
+                 const std::string& name,
+                 int nbits,
+                 bool shared,
+                 const int rc,
+                 std::string& fname,
+                 bool temp)
+      : dictRef(dict_ref)
+      , dictName(name)
+      , dictNBits(nbits)
+      , dictIsShared(shared)
+      , dictFolderPath(fname)
+      , refcount(rc)
+      , dictIsTemp(temp)
+      , stringDict(nullptr) {}
+
+  DictDescriptor(int db_id,
+                 int dict_id,
+                 const std::string& name,
+                 int nbits,
+                 bool shared,
+                 const int rc,
+                 std::string& fname,
+                 bool temp)
+      : dictName(name)
+      , dictNBits(nbits)
+      , dictIsShared(shared)
+      , dictFolderPath(fname)
+      , refcount(rc)
+      , dictIsTemp(temp)
+      , stringDict(nullptr) {
+    dictRef.dbId = db_id;
+    dictRef.dictId = dict_id;
+  }
 };
 
 #endif  // DICT_DESCRIPTOR

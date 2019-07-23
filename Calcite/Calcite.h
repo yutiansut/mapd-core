@@ -24,41 +24,89 @@
 #ifndef CALCITE_H
 #define CALCITE_H
 
-#include "gen-cpp/CalciteServer.h"
-#include <jni.h>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+#include "Shared/MapDParameters.h"
+#include "rapidjson/document.h"
+
+namespace Catalog_Namespace {
+class SessionInfo;
+}
+
+// Forward declares for Thrift-generated classes
+class TFilterPushDownInfo;
+class TPlanResult;
+class TCompletionHint;
 
 class Calcite {
  public:
-  Calcite(int port, std::string data_dir, size_t calcite_max_mem);
-  std::string process(std::string user,
-                      std::string passwd,
-                      std::string catalog,
-                      std::string sql_string,
+  Calcite(const int mapd_port,
+          const int port,
+          const std::string& data_dir,
+          const size_t calcite_max_mem,
+          const std::string& udf_filename = "")
+      : Calcite(mapd_port, port, data_dir, calcite_max_mem, "", udf_filename){};
+  Calcite(const int mapd_port,
+          const int port,
+          const std::string& data_dir,
+          const size_t calcite_max_mem,
+          const std::string& session_prefix,
+          const std::string& udf_filename = "");
+  Calcite(const MapDParameters& mapd_parameter,
+          const std::string& data_dir,
+          const std::string& session_prefix,
+          const std::string& udf_filename = "");
+  TPlanResult process(const Catalog_Namespace::SessionInfo& session_info,
+                      const std::string sql_string,
+                      const std::vector<TFilterPushDownInfo>& filter_push_down_info,
                       const bool legacy_syntax,
-                      const bool is_explain);
+                      const bool is_explain,
+                      const bool is_view_optimize);
+  std::vector<TCompletionHint> getCompletionHints(
+      const Catalog_Namespace::SessionInfo& session_info,
+      const std::vector<std::string>& visible_tables,
+      const std::string sql_string,
+      const int cursor);
   std::string getExtensionFunctionWhitelist();
+  std::string getUserDefinedFunctionWhitelist();
   void updateMetadata(std::string catalog, std::string table);
+  void close_calcite_server(bool log = true);
   virtual ~Calcite();
+  std::string getRuntimeUserDefinedFunctionWhitelist();
+  void setRuntimeUserDefinedFunction(std::string udf_string);
+  std::string& get_session_prefix() { return session_prefix_; }
 
  private:
-  void runJNI(int port, std::string data_dir, size_t calcite_max_memory);
-  void runServer(int port, std::string data_dir);
-  std::string handle_java_return(JNIEnv* env, jobject process_result);
-  JNIEnv* checkJNIConnection();
-  std::unique_ptr<CalciteServerClient> client;
+  void init(const int mapd_port,
+            const int port,
+            const std::string& data_dir,
+            const size_t calcite_max_mem,
+            const std::string& udf_filename);
+  void runServer(const int mapd_port,
+                 const int port,
+                 const std::string& data_dir,
+                 const size_t calcite_max_mem,
+                 const std::string& udf_filename);
+  TPlanResult processImpl(const Catalog_Namespace::SessionInfo& session_info,
+                          const std::string sql_string,
+                          const std::vector<TFilterPushDownInfo>& filter_push_down_info,
+                          const bool legacy_syntax,
+                          const bool is_explain,
+                          const bool is_view_optimize);
+  std::vector<std::string> get_db_objects(const std::string ra);
+  void inner_close_calcite_server(bool log);
+
+  std::thread calcite_server_thread_;
+  int ping();
+
   bool server_available_;
-  bool jni_;
   int remote_calcite_port_ = -1;
-  JavaVM* jvm_;
-  jclass calciteDirect_;
-  jobject calciteDirectObject_;
-  jmethodID constructor_;
-  jmethodID processMID_;
-  jmethodID updateMetadataMID_;
-  jmethodID hasFailedMID_;
-  jmethodID getElapsedTimeMID_;
-  jmethodID getTextMID_;
-  jmethodID getExtensionFunctionWhitelistMID_;
+  std::string ssl_trust_store_;
+  std::string ssl_trust_password_;
+  std::string session_prefix_;
+  std::once_flag shutdown_once_flag_;
 };
 
 #endif /* CALCITE_H */

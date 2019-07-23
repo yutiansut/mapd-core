@@ -1,4 +1,15 @@
-cmake_minimum_required(VERSION 2.8)
+# fixme: this should be 3.3, but that breaks static ncurses
+cmake_minimum_required(VERSION 3.2)
+
+# force `Release` build type if left unspecified
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+endif()
+
+if("${CMAKE_VERSION}" VERSION_GREATER 3.11.999)
+  cmake_policy(SET CMP0074 NEW)
+endif()
 
 find_program(CCACHE_EXE ccache)
 if(CCACHE_EXE)
@@ -13,7 +24,7 @@ if(ENABLE_IWYU)
   endif()
 endif()
 
-project(mapd)
+project(omnisci)
 
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/Rendering")
   set(MAPD_EDITION "OS")
@@ -25,12 +36,12 @@ set_property(CACHE MAPD_EDITION PROPERTY STRINGS "EE" "CE" "OS")
 add_definitions("-DMAPD_EDITION_${MAPD_EDITION}")
 string(TOLOWER "${MAPD_EDITION}" MAPD_EDITION_LOWER)
 
-set(MAPD_VERSION_MAJOR "3")
-set(MAPD_VERSION_MINOR "0")
-set(MAPD_VERSION_PATCH "1")
+set(MAPD_VERSION_MAJOR "4")
+set(MAPD_VERSION_MINOR "8")
+set(MAPD_VERSION_PATCH "0")
 set(MAPD_VERSION_EXTRA "dev")
 set(MAPD_VERSION_RAW "${MAPD_VERSION_MAJOR}.${MAPD_VERSION_MINOR}.${MAPD_VERSION_PATCH}${MAPD_VERSION_EXTRA}")
-set(MAPD_IMMERSE_URL "http://builds.mapd.com/frontend/mapd2-dashboard-v2-latest-master-prod.zip")
+set(MAPD_IMMERSE_URL "http://builds.mapd.com/frontend/mapd2-dashboard-v2-137-release-prod.zip")
 set(MAPD_DOCS_URL "http://docs.builds.mapd.com/master/docs-master.zip")
 string(TIMESTAMP MAPD_BUILD_DATE "%Y%m%d")
 
@@ -41,6 +52,10 @@ else()
 endif()
 set(MAPD_VERSION "${MAPD_VERSION_RAW}-${MAPD_BUILD_NUMBER}")
 
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/Modules")
@@ -49,17 +64,41 @@ option(PREFER_STATIC_LIBS "Prefer linking against static libraries" OFF)
 if(PREFER_STATIC_LIBS)
   set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a ${CMAKE_FIND_LIBRARY_SUFFIXES})
   set(Boost_USE_STATIC_LIBS ON)
-
+  set(OPENSSL_USE_STATIC_LIBS ON)
+  set(Thrift_USE_STATIC_LIBS ON)
   if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc -static-libstdc++")
   endif()
 
-  set(CUDA_USE_STATIC_CUDA_RUNTIME ON)
+  set(CUDA_USE_STATIC_CUDA_RUNTIME ON CACHE STRING "Use static CUDA runtime")
+else()
+  add_definitions("-DBOOST_LOG_DYN_LINK")
+endif()
+
+option(ENABLE_JAVA_REMOTE_DEBUG "Enable Java Remote Debug" OFF )
+if(ENABLE_JAVA_REMOTE_DEBUG)
+  add_definitions("-DENABLE_JAVA_REMOTE_DEBUG")
+endif()
+
+option(ENABLE_VARLEN_UPDATE "Enable varlen updates" ON )
+if( ENABLE_VARLEN_UPDATE )
+  add_definitions("-DENABLE_VARLEN_UPDATE")
+endif()
+
+option(ENABLE_CALCITE_UPDATE_PATH "Enable Calcite Update Path" ON)
+if( ENABLE_CALCITE_UPDATE_PATH )
+  add_definitions("-DCALCITE_UPDATE_ENABLED")
+endif()
+
+option(ENABLE_CALCITE_DELETE_PATH "Enable Calcite Delete Path" ON)
+if( ENABLE_CALCITE_DELETE_PATH )
+  add_definitions("-DCALCITE_DELETE_ENABLED")
 endif()
 
 option(ENABLE_CUDA "Enable CUDA support" ON)
 if(ENABLE_CUDA)
   find_package(CUDA REQUIRED)
+  include_directories(${CUDA_INCLUDE_DIRS})
   list(APPEND CUDA_LIBRARIES ${CUDA_CUDA_LIBRARY})
   add_definitions("-DHAVE_CUDA")
 
@@ -72,6 +111,18 @@ else()
   set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-cpu")
 endif()
 
+option(SUPPRESS_NULL_LOGGER_DEPRECATION_WARNINGS "Suppress NullLogger deprecated warnings.")
+if (SUPPRESS_NULL_LOGGER_DEPRECATION_WARNINGS)
+  add_definitions("-DSUPPRESS_NULL_LOGGER_DEPRECATION_WARNINGS")
+endif()
+
+option(ENABLE_CUDA_KERNEL_DEBUG "Enable debugging symbols for CUDA device Kernels" OFF)
+
+option(ENABLE_JIT_DEBUG "Enable debugging symbols for the JIT" OFF)
+if (ENABLE_JIT_DEBUG)
+  add_definitions("-DWITH_JIT_DEBUG")
+endif()
+
 if(XCODE)
   if(ENABLE_CUDA)
     set(CMAKE_EXE_LINKER_FLAGS "-F/Library/Frameworks -framework CUDA")
@@ -79,10 +130,23 @@ if(XCODE)
   add_definitions("-DXCODE")
 endif()
 
-find_package(Git)
-find_package(Glog REQUIRED)
+# fixme: hack works for Homebrew, might not work for Conda
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+  set(OPENSSL_ROOT_DIR "/usr/local/opt/openssl/")
+endif()
+find_package(OpenSSL REQUIRED)
+include_directories(${OPENSSL_INCLUDE_DIR})
+
 find_package(Thrift REQUIRED)
 include_directories(${Thrift_INCLUDE_DIRS})
+if("${Thrift_VERSION}" VERSION_LESS "0.11.0")
+  add_definitions("-DHAVE_THRIFT_BOOST_SHAREDPTR")
+else()
+  add_definitions("-DHAVE_THRIFT_STD_SHAREDPTR")
+endif()
+
+find_package(Git)
+find_package(Glog REQUIRED)
 find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(GDAL REQUIRED)
@@ -92,9 +156,14 @@ include_directories(${GDAL_INCLUDE_DIRS})
 
 option(ENABLE_FOLLY "Use Folly" ON)
 if(ENABLE_FOLLY)
-  find_package(Folly REQUIRED)
-  include_directories(${Folly_INCLUDE_DIRS})
-  add_definitions("-DHAVE_FOLLY")
+  find_package(Folly)
+  if(NOT Folly_FOUND)
+    set(ENABLE_FOLLY OFF CACHE BOOL "Use Folly" FORCE)
+  else()
+    include_directories(${Folly_INCLUDE_DIRS})
+    add_definitions("-DHAVE_FOLLY")
+    list(APPEND Folly_LIBRARIES ${Glog_LIBRARIES})
+  endif()
 endif()
 
 find_package(Curses REQUIRED)
@@ -104,18 +173,12 @@ if (CURSES_HAVE_NCURSES_CURSES_H AND NOT CURSES_HAVE_CURSES_H)
 endif()
 
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR}/bin)
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND (("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang"
+if(APPLE OR ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang"
     AND (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 3.6 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 3.6))
-    OR ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 4.9)))
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1y -DHAS_SHARED_MUTEX")
-  find_package( Boost COMPONENTS filesystem program_options regex system REQUIRED QUIET )
+    OR ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 4.9))
+  find_package( Boost COMPONENTS log log_setup filesystem program_options regex system thread timer REQUIRED )
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-  find_package( Boost COMPONENTS filesystem program_options regex thread system REQUIRED QUIET )
-  if(PREFER_STATIC_LIBS AND ${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-    list(APPEND Boost_LIBRARIES rt)
-    list(INSERT Boost_LIBRARIES 0 pthread)
-  endif()
+  message(FATAL_ERROR, "GCC v4.9 or clang v3.6 (or newer) is required")
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-local-typedefs -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1=1 -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2=1 -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1 -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8=1 -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS")
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -128,19 +191,6 @@ endif()
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
-endif()
-
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-  set(CMAKE_INSTALL_RPATH
-    "\$ORIGIN/../ThirdParty/java/jre/lib/amd64/server"
-    "/usr/lib/jvm/java-1.8.0-openjdk-amd64/jre/lib/amd64/server"
-    "/usr/lib/jvm/jre-1.8.0-openjdk/lib/amd64/server"
-    "/usr/lib/jvm/java-1.8.0-openjdk/jre/lib/amd64/server"
-    "/usr/lib/jvm/jre/lib/amd64/server"
-    "/usr/lib/jvm/java/jre/lib/amd64/server"
-    "/usr/lib/jvm/default-java/jre/lib/amd64/server"
-  )
-  set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 endif()
 
 option(ENABLE_LLVM_DBG "switch to local debug version of llvm" OFF)
@@ -162,14 +212,35 @@ option(ENABLE_ASAN "Enable address sanitizer" OFF)
 option(ENABLE_TSAN "Enable thread sanitizer" OFF)
 if(ENABLE_ASAN)
   set(SAN_FLAGS "-fsanitize=address -O1 -fno-omit-frame-pointer")
+  add_definitions("-DWITH_DECODERS_BOUNDS_CHECKING")
 elseif(ENABLE_TSAN)
+  # Copy the config directory to the build dir for TSAN suppressions
+  file(COPY config DESTINATION ${CMAKE_BINARY_DIR})
+
   set(SAN_FLAGS "-fsanitize=thread -fPIC -O1 -fno-omit-frame-pointer")
+  # required for older GCC, see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=64354
+  add_definitions("-D__SANITIZE_THREAD__")
 endif()
 if(ENABLE_ASAN OR ENABLE_TSAN)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SAN_FLAGS}")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SAN_FLAGS}")
   set(ENABLE_STANDALONE_CALCITE ON)
 endif()
+
+# Code coverage
+option(ENABLE_CODE_COVERAGE "Enable compile time code coverage" OFF)
+if(ENABLE_CODE_COVERAGE)
+  if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    set(COVERAGE_FLAGS "-fprofile-instr-generate -fcoverage-mapping")
+  else()
+    message(FATAL_ERROR "Code coverage currently only supported with Clang compiler")
+  endif()
+  set(CMAKE_CXX_OUTPUT_EXTENSION_REPLACE ON)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COVERAGE_FLAGS}")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COVERAGE_FLAGS}")
+endif()
+
+option(ENABLE_DECODERS_BOUNDS_CHECKING "Enable bounds checking for column decoding" OFF)
 
 if(ENABLE_STANDALONE_CALCITE)
   add_definitions("-DSTANDALONE_CALCITE")
@@ -213,72 +284,151 @@ include_directories(ThirdParty/googletest)
 add_subdirectory(ThirdParty/googletest)
 
 # Arrow
-option(ENABLE_ARROW_CONVERTER "Enable arrow converter" OFF)
-if(ENABLE_ARROW_CONVERTER)
-  find_package(Arrow REQUIRED)
-  add_definitions("-DENABLE_ARROW_CONVERTER")
-  include_directories(${Arrow_INCLUDE_DIR})
+find_package(Arrow REQUIRED)
+add_definitions("-DARROW_NO_DEPRECATED_API")
+if(HAVE_ARROW_STATIC_RECORDBATCH_CTOR)
+  add_definitions("-DHAVE_ARROW_STATIC_RECORDBATCH_CTOR")
+endif()
+if(HAVE_ARROW_APPENDVALUES)
+  add_definitions("-DHAVE_ARROW_APPENDVALUES")
+else()
+  message(WARNING "It appears that you have Arrow < 0.10.0. Please upgrade.")
+endif()
+include_directories(${Arrow_INCLUDE_DIRS})
+
+option(ENABLE_IMPORT_PARQUET "Enable Parquet Importer support" ON)
+if(ENABLE_IMPORT_PARQUET)
+  find_package(Parquet)
+  if(NOT Parquet_FOUND)
+    set(ENABLE_IMPORT_PARQUET OFF CACHE BOOL "Enable Parquet Importer support" FORCE)
+    message(STATUS "Parquet not found. Disabling Parquet Importer support.")
+  else()
+    add_definitions("-DENABLE_IMPORT_PARQUET")
+    # when we found libparquet it means we're using arrow 11+
+    # and deps scripts must have built parquet as well as snappy
+    find_package(Snappy REQUIRED)
+  endif()
 endif()
 
 # RapidJSON
 include_directories(ThirdParty/rapidjson)
+add_definitions(-DRAPIDJSON_HAS_STDSTRING)
 
-# Poly2Tri
-include_directories(ThirdParty/poly2tri)
-add_subdirectory(ThirdParty/poly2tri)
+# Linenoise
+include_directories(ThirdParty/linenoise)
+add_subdirectory(ThirdParty/linenoise)
+
+# SQLite
+include_directories(ThirdParty/sqlite3)
+add_subdirectory(ThirdParty/sqlite3)
+
+#rdkafka
+include_directories(ThirdParty/librdkafka/src-cpp)
+add_subdirectory(ThirdParty/librdkafka)
+
+# aws-sdk
+option(ENABLE_AWS_S3 "Enable AWS S3 support" ON)
+if(ENABLE_AWS_S3)
+  find_package(LibAwsS3)
+  if(NOT LibAwsS3_FOUND)
+    set(ENABLE_AWS_S3 OFF CACHE BOOL "Enable AWS S3 support" FORCE)
+  else()
+    add_definitions("-DHAVE_AWS_S3")
+  endif()
+endif()
+
+# bcrypt
+include_directories(ThirdParty/bcrypt)
+add_subdirectory(ThirdParty/bcrypt)
+
+# PicoSHA2
+include_directories(ThirdParty/PicoSHA2)
+
+if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+# opensaml
+  option(ENABLE_SAML "Enable SAML support" ON)
+  if(ENABLE_SAML)
+    find_package(OpenSaml)
+    if(NOT OpenSaml_FOUND)
+      set(ENABLE_SAML OFF CACHE BOOL "Enable SAML support" FORCE)
+    else()
+      add_definitions("-DHAVE_SAML")
+    endif()
+  endif()
+endif()
 
 add_custom_command(
     DEPENDS ${CMAKE_SOURCE_DIR}/mapd.thrift
+    DEPENDS ${CMAKE_SOURCE_DIR}/QueryEngine/serialized_result_set.thrift
     OUTPUT
         ${CMAKE_BINARY_DIR}/gen-cpp/MapD.cpp
         ${CMAKE_BINARY_DIR}/gen-cpp/MapD.h
         ${CMAKE_BINARY_DIR}/gen-cpp/mapd_constants.cpp
         ${CMAKE_BINARY_DIR}/gen-cpp/mapd_types.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/completion_hints_constants.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/completion_hints_types.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/serialized_result_set_constants.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/serialized_result_set_types.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/common_constants.cpp
+        ${CMAKE_BINARY_DIR}/gen-cpp/common_types.cpp
     COMMAND ${Thrift_EXECUTABLE}
-    ARGS -gen cpp -o ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}/mapd.thrift)
+    ARGS -gen cpp -r -o ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}/mapd.thrift)
 list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_BINARY_DIR}/gen-cpp/)
 
 add_library(mapd_thrift
     ${CMAKE_BINARY_DIR}/gen-cpp/MapD.cpp
     ${CMAKE_BINARY_DIR}/gen-cpp/MapD.h
     ${CMAKE_BINARY_DIR}/gen-cpp/mapd_constants.cpp
-    ${CMAKE_BINARY_DIR}/gen-cpp/mapd_types.cpp)
+    ${CMAKE_BINARY_DIR}/gen-cpp/mapd_types.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/completion_hints_constants.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/completion_hints_types.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/serialized_result_set_constants.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/serialized_result_set_types.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/common_constants.cpp
+    ${CMAKE_BINARY_DIR}/gen-cpp/common_types.cpp)
+
+target_compile_options(mapd_thrift PRIVATE -fPIC)
 target_link_libraries(mapd_thrift ${Thrift_LIBRARIES})
 
-
-
-option(ENABLE_CALCITE "Build Calcite adapter" ON)
-if(ENABLE_CALCITE)
-  add_definitions("-DHAVE_CALCITE")
-  find_package(JNI REQUIRED)
-  include_directories(${JNI_INCLUDE_DIRS})
+if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+  include_directories(Catalog/ee)
+  include_directories(Distributed/ee)
 else()
-  set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-legacyparser")
+  include_directories(Catalog/os)
+  include_directories(Distributed/os)
 endif()
 
-option(ENABLE_RAVM "Enable RA vm" ON)
-if(ENABLE_RAVM)
-  add_definitions("-DHAVE_RAVM")
-  option(ENABLE_JOIN_EXEC "Enable RA vm to execute join node" ON)
-  if(ENABLE_JOIN_EXEC)
-    add_definitions("-DENABLE_JOIN_EXEC")
-  endif()
-  option(ENABLE_MULTIFRAG_JOIN "Enable Join on Multi-frag table" ON)
-  if(ENABLE_MULTIFRAG_JOIN)
-    add_definitions("-DENABLE_MULTIFRAG_JOIN")
+set(MAPD_RENDERING_LIBRARIES "")
+if(NOT "${MAPD_EDITION_LOWER}" STREQUAL "os")
+  option(ENABLE_RENDERING "Build backend renderer" OFF)
+  if(ENABLE_RENDERING)
+    # muparserx - currently render-only
+    include_directories(ThirdParty/muparserx)
+    add_subdirectory(ThirdParty/muparserx)
+
+    add_definitions("-DHAVE_RENDERING")
+    add_subdirectory(Rendering)
+    add_subdirectory(QueryRenderer)
+
+    include_directories(${RENDERING_INCLUDE_DIRS})
+    set(MAPD_RENDERING_LIBRARIES QueryRenderer Rendering)
+
+    set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-render")
+    if(${RENDERER_CONTEXT_TYPE} STREQUAL "GLX")
+      set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-glx")
+    endif()
   endif()
 else()
-  set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-noravm")
+  set(ENABLE_RENDERING OFF CACHE BOOL "Build backend renderer" FORCE)
 endif()
 
-option(ENABLE_COMPACTION "Enable Compaction and Overflow/Underflow Detection" OFF)
-if(ENABLE_COMPACTION)
-  add_definitions("-DENABLE_COMPACTION")
-endif()
+set(TIME_LIMITED_NUMBER_OF_DAYS "30" CACHE STRING "Number of days this build is valid for if build is time limited")
 
-option(ENABLE_KEY_COMPACTION "Enable Key Compaction for Multi-column Baseline Hash" ON)
-if(ENABLE_KEY_COMPACTION)
-  add_definitions("-DENABLE_KEY_COMPACTION")
+option(TIME_LIMITED_BUILD "Build Time Limited Build" OFF)
+if(TIME_LIMITED_BUILD)
+  list(APPEND TIME_LIMITED_DEFINITIONS "TIME_LIMITED_BUILD")
+  list(APPEND TIME_LIMITED_DEFINITIONS "TIME_LIMITED_NUMBER_OF_DAYS=${TIME_LIMITED_NUMBER_OF_DAYS}")
+  set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-${TIME_LIMITED_NUMBER_OF_DAYS}d")
 endif()
 
 option(ENABLE_PROFILER "Enable google perftools" OFF)
@@ -293,6 +443,12 @@ endif()
 add_subdirectory(SqliteConnector)
 
 add_subdirectory(StringDictionary)
+add_subdirectory(Calcite)
+get_target_property(CalciteThrift_BINARY_DIR calciteserver_thrift BINARY_DIR)
+include_directories(${CalciteThrift_BINARY_DIR})
+
+add_subdirectory(Distributed)
+
 add_subdirectory(Catalog)
 add_subdirectory(Parser)
 add_subdirectory(Analyzer)
@@ -301,10 +457,12 @@ add_subdirectory(Import)
 add_subdirectory(QueryEngine)
 add_subdirectory(DataMgr)
 add_subdirectory(CudaMgr)
+add_subdirectory(LockMgr)
 add_subdirectory(Fragmenter)
 add_subdirectory(Chunk)
 add_subdirectory(Shared)
 add_subdirectory(Utils)
+add_subdirectory(QueryRunner)
 add_subdirectory(SQLFrontend)
 add_subdirectory(ThriftHandler)
 
@@ -313,61 +471,85 @@ if(ENABLE_ODBC)
   add_subdirectory(ODBC)
 endif()
 
-if(ENABLE_CALCITE)
-  add_subdirectory(Calcite)
+set(MAPD_LIBRARIES Shared Catalog SqliteConnector Parser Analyzer Planner CsvImport QueryRunner QueryEngine LockMgr DataMgr Fragmenter Chunk)
+
+if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+  list(APPEND MAPD_LIBRARIES Distributed)
 endif()
 
-set(MAPD_LIBRARIES Shared Catalog SqliteConnector Parser Analyzer Planner
-  QueryEngine DataMgr Fragmenter Chunk)
+list(APPEND MAPD_LIBRARIES Calcite)
+
+if(ENABLE_RENDERING)
+  add_dependencies(QueryRenderer Parser)
+  list(APPEND MAPD_LIBRARIES "${MAPD_RENDERING_LIBRARIES}")
+endif()
+
+list(APPEND Arrow_LIBRARIES ${Snappy_LIBRARIES})
+list(APPEND MAPD_LIBRARIES ${Arrow_LIBRARIES})
 
 if(ENABLE_FOLLY)
   list(APPEND MAPD_LIBRARIES ${Folly_LIBRARIES})
 endif()
 
-if(ENABLE_CALCITE)
-  list(APPEND MAPD_LIBRARIES Calcite)
+if(ENABLE_LICENSING_AWS)
+  list(APPEND MAPD_LIBRARIES AWSMarketplace)
 endif()
 
-
-if(ENABLE_ARROW_CONVERTER)
-  list(APPEND MAPD_LIBRARIES ${Arrow_LIBRARIES})
+option(ENABLE_TESTS "Build unit tests" ON)
+if (ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(Tests)
+  add_subdirectory(SampleCode)
 endif()
-
-enable_testing()
-add_subdirectory(Tests)
-add_subdirectory(SampleCode)
 
 set(initdb_source_files initdb.cpp)
 add_executable(initdb ${initdb_source_files})
 
-set(mapd_server_source_files MapDServer.cpp ${CMAKE_BINARY_DIR}/MapDRelease.h)
+set(omnisci_server_source_files MapDServer.cpp ${CMAKE_BINARY_DIR}/MapDRelease.h ${CMAKE_SOURCE_DIR}/Shared/ConfigResolve.h)
 
-add_executable(mapd_server ${mapd_server_source_files})
-set_target_properties(mapd_server PROPERTIES COMPILE_DEFINITIONS "${TIME_LIMITED_DEFINITIONS}")
+add_executable(omnisci_server ${omnisci_server_source_files})
+set_target_properties(omnisci_server PROPERTIES COMPILE_DEFINITIONS "${TIME_LIMITED_DEFINITIONS}")
 
-if(ENABLE_CALCITE)
-  add_custom_command(
-      DEPENDS ${CMAKE_SOURCE_DIR}/mapd.thrift
-      OUTPUT
-          ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/MapD.java
-          ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/TRow.java
-      COMMAND mkdir
-      ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
-      COMMAND ${Thrift_EXECUTABLE}
-      ARGS -gen java -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/mapd.thrift)
+add_custom_command(
+    DEPENDS ${CMAKE_SOURCE_DIR}/mapd.thrift
+    OUTPUT
+        ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/MapD.java
+        ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/TRow.java
+    COMMAND mkdir
+    ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
+    COMMAND ${Thrift_EXECUTABLE}
+    ARGS -gen java -r -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/mapd.thrift)
 
-  add_custom_command(
-      DEPENDS ${CMAKE_SOURCE_DIR}/java/thrift/calciteserver.thrift
-      OUTPUT ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/calciteserver/CalciteServer.java
-      COMMAND mkdir
-      ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
-      COMMAND ${Thrift_EXECUTABLE}
-      ARGS -gen java -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/java/thrift/calciteserver.thrift)
-  list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/)
-endif()
+add_custom_command(
+    DEPENDS ${CMAKE_SOURCE_DIR}/common.thrift
+    OUTPUT
+        ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/common.java
+    COMMAND mkdir
+    ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
+    COMMAND ${Thrift_EXECUTABLE}
+    ARGS -gen java -r -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/common.thrift)
+
+add_custom_command(
+    DEPENDS ${CMAKE_SOURCE_DIR}/QueryEngine/serialized_result_set.thrift
+    OUTPUT
+        ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/serialized_result_set.java
+    COMMAND mkdir
+    ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
+    COMMAND ${Thrift_EXECUTABLE}
+    ARGS -gen java -r -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/QueryEngine/serialized_result_set.thrift)
+
+add_custom_command(
+    DEPENDS ${CMAKE_SOURCE_DIR}/java/thrift/calciteserver.thrift ${CMAKE_SOURCE_DIR}/completion_hints.thrift
+    OUTPUT ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/calciteserver/CalciteServer.java
+    COMMAND mkdir
+    ARGS -p ${CMAKE_SOURCE_DIR}/java/thrift/src/gen
+    COMMAND ${Thrift_EXECUTABLE}
+    ARGS -gen java -r -I ${CMAKE_SOURCE_DIR} -out ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/ ${CMAKE_SOURCE_DIR}/java/thrift/calciteserver.thrift)
+
+list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/)
 
 execute_process(
-  COMMAND ${GIT_EXECUTABLE} log -1 --format=%h
+  COMMAND ${GIT_EXECUTABLE} rev-parse --short=10 HEAD
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   OUTPUT_VARIABLE MAPD_GIT_HASH
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -388,26 +570,88 @@ add_custom_target(rerun_cmake ALL
   COMMAND cmake .
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   )
-add_dependencies(mapd_server rerun_cmake)
+add_dependencies(omnisci_server rerun_cmake)
 
-target_link_libraries(mapd_server mapd_thrift thrift_handler ${MAPD_LIBRARIES} ${Boost_LIBRARIES} ${Glog_LIBRARIES} ${CMAKE_DL_LIBS} ${CUDA_LIBRARIES} ${LLVM_LINKER_FLAGS} ${PROFILER_LIBS} ${CURSES_LIBRARIES} ${ZLIB_LIBRARIES} poly2tri)
-if(ENABLE_FOLLY)
-target_link_libraries(initdb Shared Catalog Fragmenter Chunk SqliteConnector DataMgr StringDictionary ${Boost_LIBRARIES} ${Folly_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(omnisci_server mapd_thrift thrift_handler ${MAPD_LIBRARIES} ${Boost_LIBRARIES} ${CMAKE_DL_LIBS} ${CUDA_LIBRARIES} ${LLVM_LINKER_FLAGS} ${PROFILER_LIBS} ${CURSES_LIBRARIES} ${ZLIB_LIBRARIES})
+
+target_link_libraries(initdb mapd_thrift DataMgr ${MAPD_LIBRARIES} ${Boost_LIBRARIES} ${CMAKE_DL_LIBS} ${CUDA_LIBRARIES} ${LLVM_LINKER_FLAGS} ${CURSES_LIBRARIES} ${ZLIB_LIBRARIES})
+
+macro(set_dpkg_arch arch_in arch_out)
+  if("${arch_in}" STREQUAL "x86_64")
+    set(${arch_out} "amd64")
+  elseif("${arch_in}" STREQUAL "aarch64")
+    set(${arch_out} "arm64")
+  elseif("${arch_in}" STREQUAL "ppc64le")
+    set(${arch_out} "ppc64el")
+  else()
+    set(${arch_out} "${arch_in}")
+  endif()
+endmacro()
+
+# clang-tidy
+find_program(JQ_EXECUTABLE NAMES jq)
+if (NOT ${JQ_EXECUTABLE} STREQUAL "JQ_EXECUTABLE-NOTFOUND")
+  file(WRITE ${CMAKE_BINARY_DIR}/jq.filter "map(select(.file | test(\".*/(build|ThirdParty)/.*\") | not))")
+  add_custom_target(clang-tidy
+    COMMAND mkdir -p clang-tidy
+    COMMAND ${JQ_EXECUTABLE} -f jq.filter ${CMAKE_BINARY_DIR}/compile_commands.json > clang-tidy/compile_commands.json
+    COMMAND cd clang-tidy && ${CMAKE_SOURCE_DIR}/ThirdParty/clang/run-clang-tidy.py -quiet -format -fix -header-filter="${CMAKE_SOURCE_DIR}/.*" 2> /dev/null
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  )
 else()
-target_link_libraries(initdb Shared Catalog Fragmenter Chunk SqliteConnector DataMgr StringDictionary ${Boost_LIBRARIES} ${CMAKE_DL_LIBS})
+  message(STATUS "jq not found, disabling clang-tidy target")
 endif()
 
-# Packaging
-set(CPACK_PACKAGE_VENDOR "MapD Technologies, Inc.")
-set(CPACK_PACKAGE_CONTACT "support@mapd.com")
-set(CPACK_PROJECT_CONFIG_FILE ${CMAKE_SOURCE_DIR}/CMakePackaging.txt)
-set(CPACK_STRIP_FILES ON)
+# doxygen
+find_package(Doxygen)
+if(DOXYGEN_FOUND)
+  configure_file(
+    ${CMAKE_SOURCE_DIR}/Doxyfile.in ${CMAKE_BINARY_DIR}/Doxyfile @ONLY)
+  add_custom_target(doxygen ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Generate API documentation with Doxygen"
+    VERBATIM
+    USES_TERMINAL
+  )
+  add_custom_target(doxygen_zip zip -r doxygen-${MAPD_GIT_HASH}.zip doxygen
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Generating .zip with API documentation from Doxygen"
+    VERBATIM
+    USES_TERMINAL
+  )
+  add_dependencies(doxygen_zip doxygen)
+endif(DOXYGEN_FOUND)
 
+# Packaging
+
+string(TOLOWER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_LOWER)
+if(NOT "${CMAKE_BUILD_TYPE_LOWER}" STREQUAL "debug" AND NOT "${CMAKE_BUILD_TYPE_LOWER}" STREQUAL "relwithdebinfo")
+  set(CPACK_STRIP_FILES ON)
+else()
+  set(MAPD_PACKAGE_FLAGS "${MAPD_PACKAGE_FLAGS}-debug")
+endif()
+set(CPACK_PACKAGE_VENDOR "OmniSci, Inc.")
+set(CPACK_PACKAGE_CONTACT "support@omnisci.com")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OmniSci Core Database")
+set(CPACK_PROJECT_CONFIG_FILE ${CMAKE_SOURCE_DIR}/CMakePackaging.txt)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "default-jre-headless | openjdk-8-jre-headless | java8-runtime-headless, bsdmainutils, curl | wget")
+set(CPACK_RPM_PACKAGE_REQUIRES "java-headless, util-linux, curl")
+set(CPACK_RPM_PACKAGE_AUTOREQ OFF)
+set(CPACK_RPM_SPEC_MORE_DEFINE "%define __jar_repack %{nil}")
+if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libldap-2.4-2")
+endif()
+if(ENABLE_RENDERING)
+  set(CPACK_RPM_PACKAGE_REQUIRES "${CPACK_RPM_PACKAGE_REQUIRES}, libX11, libXext")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libx11-6, libxext6")
+endif()
+
+set_dpkg_arch(${CMAKE_SYSTEM_PROCESSOR} CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
 
 install(DIRECTORY ThirdParty/licenses DESTINATION "ThirdParty/")
 
 # Frontend
-option(MAPD_IMMERSE_DOWNLOAD "Download MapD Immerse for packaging" ON)
+option(MAPD_IMMERSE_DOWNLOAD "Download OmniSci Immerse for packaging" OFF)
 set(MAPD_IMMERSE_URL ${MAPD_IMMERSE_URL} CACHE STRING "URL to bundled frontend")
 if(MAPD_IMMERSE_DOWNLOAD)
   include(ExternalProject)
@@ -418,6 +662,7 @@ if(MAPD_IMMERSE_DOWNLOAD)
     UPDATE_COMMAND ""
     BUILD_COMMAND ""
     INSTALL_COMMAND ""
+    LOG_DOWNLOAD on
     )
   externalproject_get_property(frontend source_dir)
   install(DIRECTORY ${source_dir}/ DESTINATION "frontend/" PATTERN .git EXCLUDE PATTERN node_modules EXCLUDE)
@@ -432,20 +677,20 @@ if(NOT GO_EXECUTABLE)
 endif()
 file(GLOB_RECURSE GOLANG_SOURCES RELATIVE ${CMAKE_SOURCE_DIR} ThirdParty/go/src/mapd/vendor/**/*.go)
 add_custom_command(
-  OUTPUT ${CMAKE_BINARY_DIR}/bin/mapd_web_server
+  OUTPUT ${CMAKE_BINARY_DIR}/bin/omnisci_web_server
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/ThirdParty/go/src/mapd/vendor/ ${CMAKE_BINARY_DIR}/go/src/
-  COMMAND GOPATH=${CMAKE_BINARY_DIR}/go ${GO_EXECUTABLE} build -ldflags "-X main.version=${CPACK_PACKAGE_VERSION}" -o ${CMAKE_BINARY_DIR}/bin/mapd_web_server ${CMAKE_SOURCE_DIR}/MapDWebServer.go
-  DEPENDS MapDWebServer.go ${GOLANG_SOURCES}
+  COMMAND GOPATH=${CMAKE_BINARY_DIR}/go ${GO_EXECUTABLE} build -ldflags "-X main.version=${CPACK_PACKAGE_VERSION}" -o ${CMAKE_BINARY_DIR}/bin/omnisci_web_server ${CMAKE_SOURCE_DIR}/OmniSciWebServer.go
+  DEPENDS OmniSciWebServer.go ${GOLANG_SOURCES}
   )
-add_custom_target(mapd_web_server ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/mapd_web_server)
-install(PROGRAMS ${CMAKE_BINARY_DIR}/bin/mapd_web_server DESTINATION bin)
-list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_BINARY_DIR}/bin/mapd_web_server)
+add_custom_target(omnisci_web_server ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/omnisci_web_server)
+install(PROGRAMS ${CMAKE_BINARY_DIR}/bin/omnisci_web_server DESTINATION bin)
+list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_BINARY_DIR}/bin/omnisci_web_server)
 list(APPEND ADDITIONAL_MAKE_CLEAN_FILES ${CMAKE_BINARY_DIR}/go)
 
 add_subdirectory(ThirdParty/generate_cert)
 
 # docs
-option(MAPD_DOCS_DOWNLOAD "Download MapD documentation for packaging" OFF)
+option(MAPD_DOCS_DOWNLOAD "Download OmniSci documentation for packaging" OFF)
 set(MAPD_DOCS_URL ${MAPD_DOCS_URL} CACHE STRING "URL to bundled docs")
 if(MAPD_DOCS_DOWNLOAD)
   include(ExternalProject)
@@ -456,6 +701,7 @@ if(MAPD_DOCS_DOWNLOAD)
     UPDATE_COMMAND ""
     BUILD_COMMAND ""
     INSTALL_COMMAND ""
+    LOG_DOWNLOAD on
     )
   externalproject_get_property(docs source_dir)
   install(DIRECTORY ${source_dir}/ DESTINATION "docs/" PATTERN .git EXCLUDE)
@@ -466,74 +712,77 @@ endif()
 
 # systemd
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-  install(FILES systemd/mapd_sd_server.service.in systemd/mapd_sd_server@.service.in DESTINATION systemd)
-  install(FILES systemd/mapd_web_server.service.in systemd/mapd_web_server@.service.in DESTINATION systemd)
-  install(FILES systemd/mapd.conf.in DESTINATION systemd)
-  install(FILES systemd/mapd-sds.conf.in DESTINATION systemd)
-  install(PROGRAMS systemd/find_libjvm_dir.sh DESTINATION systemd)
-  install(PROGRAMS systemd/install_mapd_systemd.sh DESTINATION systemd)
-
-  if(NOT ENABLE_RENDERING OR "${RENDERER_CONTEXT_TYPE}" STREQUAL "EGL")
-    install(FILES systemd/mapd_server.service.in systemd/mapd_server@.service.in DESTINATION systemd)
-  else()
-    install(FILES systemd/mapd_server_render.service.in RENAME mapd_server.service.in DESTINATION systemd)
-    install(FILES systemd/mapd_server_render@.service.in RENAME mapd_server@.service.in DESTINATION systemd)
-    install(FILES systemd/mapd_xorg.service DESTINATION systemd)
+  if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+    install(FILES systemd/omnisci_sd_server.service.in systemd/omnisci_sd_server@.service.in DESTINATION systemd)
+    install(FILES systemd/omnisci-sds.conf.in DESTINATION systemd)
   endif()
+  install(FILES systemd/omnisci_server.service.in systemd/omnisci_server@.service.in DESTINATION systemd)
+  install(FILES systemd/omnisci_web_server.service.in systemd/omnisci_web_server@.service.in DESTINATION systemd)
+  install(FILES systemd/omnisci.conf.in DESTINATION systemd)
+  install(PROGRAMS systemd/install_omnisci_systemd.sh DESTINATION systemd)
 endif()
 
 add_custom_target(clean-all
   COMMAND ${CMAKE_BUILD_TOOL} clean
   )
 
-if(ENABLE_CALCITE)
-  ## mvn process for java code
-  find_program(MVN_EXECUTABLE NAMES mvn)
-  if(NOT MVN_EXECUTABLE)
-    message(FATAL_ERROR "mvn not found. Install Apache Maven.")
-  endif()
-  file(GLOB_RECURSE JAVA_POM RELATIVE ${CMAKE_SOURCE_DIR} java/**/pom.xml)
-  file(GLOB_RECURSE JAVA_SOURCES RELATIVE ${CMAKE_SOURCE_DIR} java/**/*.java)
-  add_custom_command(
-    OUTPUT
-      ${CMAKE_BINARY_DIR}/bin/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar
-      ${CMAKE_BINARY_DIR}/bin/mapdjdbc-1.0-SNAPSHOT-jar-with-dependencies.jar
-      ${CMAKE_BINARY_DIR}/bin/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar
-    COMMAND MVNPATH=${CMAKE_SOURCE_DIR}/java ${MVN_EXECUTABLE} -q install -Dthrift.version="${Thrift_VERSION}"
+## mvn process for java code
+find_program(MVN_EXECUTABLE NAMES mvn)
+if(NOT MVN_EXECUTABLE)
+  message(FATAL_ERROR "mvn not found. Install Apache Maven.")
+endif()
+file(GLOB_RECURSE JAVA_POM RELATIVE ${CMAKE_SOURCE_DIR} java/**/pom.xml)
+file(GLOB_RECURSE JAVA_SOURCES RELATIVE ${CMAKE_SOURCE_DIR} java/**/*.java)
+
+set(OMNISCI_JAR_RELEASE_VERSION "${MAPD_VERSION_MAJOR}.${MAPD_VERSION_MINOR}.${MAPD_VERSION_PATCH}")
+if("${MAPD_VERSION_EXTRA}" STREQUAL "dev")
+  set (OMNISCI_JAR_RELEASE_VERSION "${OMNISCI_JAR_RELEASE_VERSION}-SNAPSHOT")
+endif()
+
+set (OMNISCI_JDBC_JAR "omnisci-jdbc-${OMNISCI_JAR_RELEASE_VERSION}.jar")
+
+add_custom_command(
+  OUTPUT
+    ${CMAKE_BINARY_DIR}/bin/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar
+    ${CMAKE_BINARY_DIR}/bin/${OMNISCI_JDBC_JAR}
+    ${CMAKE_BINARY_DIR}/bin/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar
+    COMMAND MVNPATH=${CMAKE_SOURCE_DIR}/java ${MVN_EXECUTABLE} -q clean install -Dthrift.version="${Thrift_VERSION}" -Domnisci.release.version="${OMNISCI_JAR_RELEASE_VERSION}"
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/java/mapd/target/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar ${CMAKE_BINARY_DIR}/bin
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/java/mapdjdbc/target/mapdjdbc-1.0-SNAPSHOT-jar-with-dependencies.jar ${CMAKE_BINARY_DIR}/bin
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/java/omniscijdbc/target/${OMNISCI_JDBC_JAR} ${CMAKE_BINARY_DIR}/bin
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/java/calcite/target/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar ${CMAKE_BINARY_DIR}/bin
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/java
-    DEPENDS
-      ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/MapD.java
-      ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/calciteserver/CalciteServer.java
-      ${CMAKE_SOURCE_DIR}/java/pom.xml
-      ${CMAKE_SOURCE_DIR}/mapd.thrift
-      ${JAVA_POM}
-      ${JAVA_SOURCES}
-    )
-  add_custom_target(mapd_java_components ALL DEPENDS
-    ${CMAKE_BINARY_DIR}/bin/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar
-    ${CMAKE_BINARY_DIR}/bin/mapdjdbc-1.0-SNAPSHOT-jar-with-dependencies.jar
-    ${CMAKE_BINARY_DIR}/bin/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar)
-  add_custom_target(mapd_java_clean
-    COMMAND MVNPATH=${CMAKE_SOURCE_DIR}/java ${MVN_EXECUTABLE} -q clean
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/java
-    )
-  add_dependencies(clean-all mapd_java_clean)
-  install(FILES ${CMAKE_SOURCE_DIR}/java/mapd/target/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar DESTINATION bin)
-  install(FILES ${CMAKE_SOURCE_DIR}/java/mapdjdbc/target/mapdjdbc-1.0-SNAPSHOT-jar-with-dependencies.jar DESTINATION bin)
-  install(FILES ${CMAKE_SOURCE_DIR}/java/calcite/target/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar DESTINATION bin)
-endif()
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/server/MapD.java
+    ${CMAKE_SOURCE_DIR}/java/thrift/src/gen/com/mapd/thrift/calciteserver/CalciteServer.java
+    ${CMAKE_SOURCE_DIR}/java/pom.xml
+    ${CMAKE_SOURCE_DIR}/mapd.thrift
+    ${JAVA_POM}
+    ${JAVA_SOURCES}
+  )
+add_custom_target(mapd_java_components ALL DEPENDS
+  ${CMAKE_BINARY_DIR}/bin/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar
+  ${CMAKE_BINARY_DIR}/bin/${OMNISCI_JDBC_JAR}
+  ${CMAKE_BINARY_DIR}/bin/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar)
+add_custom_target(mapd_java_clean
+  COMMAND MVNPATH=${CMAKE_SOURCE_DIR}/java ${MVN_EXECUTABLE} -q clean -Domnisci.release.version="${OMNISCI_JAR_RELEASE_VERSION}"
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/java
+  )
+add_dependencies(clean-all mapd_java_clean)
+install(FILES ${CMAKE_SOURCE_DIR}/java/mapd/target/mapd-1.0-SNAPSHOT-jar-with-dependencies.jar DESTINATION bin)
+install(FILES ${CMAKE_SOURCE_DIR}/java/omniscijdbc/target/${OMNISCI_JDBC_JAR} DESTINATION bin)
+install(FILES ${CMAKE_SOURCE_DIR}/java/calcite/target/calcite-1.0-SNAPSHOT-jar-with-dependencies.jar DESTINATION bin)
 
 set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "${ADDITIONAL_MAKE_CLEAN_FILES}")
 
-install(TARGETS initdb mapd_server DESTINATION bin)
+install(TARGETS initdb omnisci_server DESTINATION bin)
 install(FILES ${CMAKE_BINARY_DIR}/MAPD_GIT_HASH.txt DESTINATION ".")
 if(ENABLE_CUDA)
   install(FILES ${CMAKE_BINARY_DIR}/QueryEngine/cuda_mapd_rt.a DESTINATION QueryEngine)
 endif()
+install(FILES completion_hints.thrift DESTINATION ".")
 install(FILES mapd.thrift DESTINATION ".")
+install(FILES common.thrift DESTINATION ".")
+install(FILES QueryEngine/serialized_result_set.thrift DESTINATION "QueryEngine/")
 
 if(NOT PREFER_STATIC_LIBS)
   install(FILES ${Boost_LIBRARIES} DESTINATION ThirdParty/lib)
@@ -542,7 +791,7 @@ endif()
 if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
   set(EULA_FILE "${CMAKE_SOURCE_DIR}/EULA-EE.txt")
 else()
-  set(EULA_FILE "${CMAKE_SOURCE_DIR}/EULA-CE.txt")
+  set(EULA_FILE "${CMAKE_SOURCE_DIR}/LICENSE.md")
 endif()
 
 if("${MAPD_EDITION_LOWER}" STREQUAL "os")
@@ -552,12 +801,32 @@ endif()
 set(CPACK_RESOURCE_FILE_LICENSE "${EULA_FILE}")
 install(FILES "${EULA_FILE}" DESTINATION ".")
 
-install(PROGRAMS startmapd DESTINATION ".")
+install(PROGRAMS startomnisci DESTINATION ".")
+install(PROGRAMS scripts/inneromnisci DESTINATION "scripts")
 install(PROGRAMS insert_sample_data DESTINATION ".")
 
-if(_MAPDGL_EGL)
-  install(DIRECTORY docker/ DESTINATION "docker")
+if("${MAPD_EDITION_LOWER}" STREQUAL "ee")
+  install(DIRECTORY docker/sds DESTINATION "docker")
 endif()
+install(FILES docker/Dockerfile docker/Dockerfile.mapd docker/README.md DESTINATION "docker")
+
+execute_process(
+  COMMAND ln -sf omnisql mapdql
+  COMMAND ln -sf omnisci_server mapd_server
+  COMMAND ln -sf omnisci_web_server mapd_web_server
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+install(FILES
+  ${CMAKE_BINARY_DIR}/bin/mapdql
+  ${CMAKE_BINARY_DIR}/bin/mapd_server
+  ${CMAKE_BINARY_DIR}/bin/mapd_web_server
+  DESTINATION "bin"
+  )
+execute_process(
+  COMMAND ln -sf startomnisci startmapd
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  )
+install(FILES ${CMAKE_BINARY_DIR}/startmapd DESTINATION ".")
 
 exec_program(uname ARGS -m OUTPUT_VARIABLE MAPD_HOST_SYSTEM_ARCHITECTURE) # does not account for cross-compiling or Windows
 set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${MAPD_EDITION_LOWER}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}-${MAPD_HOST_SYSTEM_ARCHITECTURE}${MAPD_PACKAGE_FLAGS}")

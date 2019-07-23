@@ -16,14 +16,15 @@
 
 #include "CalciteAdapter.h"
 #include "CalciteDeserializerUtils.h"
+#include "DateTimeTranslator.h"
 
 #include "../Parser/ParserNode.h"
 #include "../Shared/StringTransform.h"
 
+#include <rapidjson/document.h>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/regex.hpp>
-#include <rapidjson/document.h>
 
 #include <set>
 #include <unordered_map>
@@ -36,11 +37,12 @@ ssize_t get_agg_operand_idx(const rapidjson::Value& expr) {
   CHECK(expr.HasMember("agg"));
   const auto& agg_operands = expr["operands"];
   CHECK(agg_operands.IsArray());
-  CHECK(agg_operands.Size() <= 1);
+  CHECK(agg_operands.Size() <= 2);
   return agg_operands.Empty() ? -1 : agg_operands[0].GetInt();
 }
 
-std::tuple<const rapidjson::Value*, SQLTypeInfo, SQLTypeInfo> parse_literal(const rapidjson::Value& expr) {
+std::tuple<const rapidjson::Value*, SQLTypeInfo, SQLTypeInfo> parse_literal(
+    const rapidjson::Value& expr) {
   CHECK(expr.IsObject());
   auto val_it = expr.FindMember("literal");
   CHECK(val_it != expr.MemberEnd());
@@ -73,7 +75,8 @@ std::tuple<const rapidjson::Value*, SQLTypeInfo, SQLTypeInfo> parse_literal(cons
   return std::make_tuple(&(val_it->value), ti, target_ti);
 }
 
-std::shared_ptr<Analyzer::Expr> set_transient_dict(const std::shared_ptr<Analyzer::Expr> expr) {
+std::shared_ptr<Analyzer::Expr> set_transient_dict(
+    const std::shared_ptr<Analyzer::Expr> expr) {
   const auto& ti = expr->get_type_info();
   if (!ti.is_string() || ti.get_compression() != kENCODING_NONE) {
     return expr;
@@ -87,16 +90,18 @@ std::shared_ptr<Analyzer::Expr> set_transient_dict(const std::shared_ptr<Analyze
 
 class CalciteAdapter {
  public:
-  CalciteAdapter(const Catalog_Namespace::Catalog& cat, const rapidjson::Value& rels) : cat_(cat) {
+  CalciteAdapter(const Catalog_Namespace::Catalog& cat, const rapidjson::Value& rels)
+      : cat_(cat) {
     time(&now_);
     CHECK(rels.IsArray());
     for (auto rels_it = rels.Begin(); rels_it != rels.End(); ++rels_it) {
       const auto& scan_ra = *rels_it;
       CHECK(scan_ra.IsObject());
-      if (scan_ra["relOp"].GetString() != std::string("LogicalTableScan")) {
+      if (scan_ra["relOp"].GetString() != std::string("EnumerableTableScan")) {
         break;
       }
-      col_names_.emplace_back(ColNames{getColNames(scan_ra), getTableFromScanNode(scan_ra)});
+      col_names_.emplace_back(
+          ColNames{getColNames(scan_ra), getTableFromScanNode(scan_ra)});
     }
   }
 
@@ -149,8 +154,9 @@ class CalciteAdapter {
     return std::make_pair(rhs, sql_qual);
   }
 
-  std::shared_ptr<Analyzer::Expr> translateOp(const rapidjson::Value& expr,
-                                              const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets) {
+  std::shared_ptr<Analyzer::Expr> translateOp(
+      const rapidjson::Value& expr,
+      const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets) {
     const auto op_str = expr["op"].GetString();
     if (op_str == std::string("LIKE") || op_str == std::string("PG_ILIKE")) {
       return translateLike(expr, scan_targets, op_str == std::string("PG_ILIKE"));
@@ -183,7 +189,8 @@ class CalciteAdapter {
       if (!now_lit.IsObject() || !now_lit.HasMember("literal")) {
         throw std::runtime_error(datetime_err);
       }
-      const auto now_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(translateTypedLiteral(now_lit));
+      const auto now_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(
+          translateTypedLiteral(now_lit));
       CHECK(now_lit_expr);
       CHECK(now_lit_expr->get_type_info().is_string());
       if (*now_lit_expr->get_constval().stringval != std::string("NOW")) {
@@ -192,7 +199,11 @@ class CalciteAdapter {
       return translateNow();
     }
     if (op_str == std::string("PG_EXTRACT") || op_str == std::string("PG_DATE_TRUNC")) {
-      return translateExtract(operands, scan_targets, op_str == std::string("PG_DATE_TRUNC"));
+      return translateExtract(
+          operands, scan_targets, op_str == std::string("PG_DATE_TRUNC"));
+    }
+    if (op_str == std::string("DATEADD")) {
+      return translateDateadd(operands, scan_targets);
     }
     if (op_str == std::string("DATEDIFF")) {
       return translateDatediff(operands, scan_targets);
@@ -203,7 +214,18 @@ class CalciteAdapter {
     if (op_str == std::string("LENGTH") || op_str == std::string("CHAR_LENGTH")) {
       CHECK_EQ(unsigned(1), operands.Size());
       auto str_arg = getExprFromNode(operands[0], scan_targets);
-      return makeExpr<Analyzer::CharLengthExpr>(str_arg->decompress(), op_str == std::string("CHAR_LENGTH"));
+      return makeExpr<Analyzer::CharLengthExpr>(str_arg->decompress(),
+                                                op_str == std::string("CHAR_LENGTH"));
+    }
+    if (op_str == std::string("KEY_FOR_STRING")) {
+      CHECK_EQ(unsigned(1), operands.Size());
+      auto str_arg = getExprFromNode(operands[0], scan_targets);
+      return makeExpr<Analyzer::KeyForStringExpr>(str_arg);
+    }
+    if (op_str == std::string("CARDINALITY") || op_str == std::string("ARRAY_LENGTH")) {
+      CHECK_EQ(unsigned(1), operands.Size());
+      auto str_arg = getExprFromNode(operands[0], scan_targets);
+      return makeExpr<Analyzer::CardinalityExpr>(str_arg->decompress());
     }
     if (op_str == std::string("$SCALAR_QUERY")) {
       throw std::runtime_error("Subqueries not supported");
@@ -242,9 +264,12 @@ class CalciteAdapter {
     switch (sql_op) {
       case kCAST: {
         const auto& expr_type = expr["type"];
-        SQLTypeInfo target_ti(to_sql_type(expr_type["type"].GetString()), !expr_type["nullable"].GetBool());
+        SQLTypeInfo target_ti(to_sql_type(expr_type["type"].GetString()),
+                              !expr_type["nullable"].GetBool());
         const auto& operand_ti = operand_expr->get_type_info();
-        if (target_ti.is_time() || operand_ti.is_string()) {  // TODO(alex): check and unify with the rest of the cases
+        if (target_ti.is_time() ||
+            operand_ti
+                .is_string()) {  // TODO(alex): check and unify with the rest of the cases
           return operand_expr->add_cast(target_ti);
         }
         return makeExpr<Analyzer::UOper>(target_ti, false, sql_op, operand_expr);
@@ -264,7 +289,8 @@ class CalciteAdapter {
       case kUNNEST: {
         const auto& ti = operand_expr->get_type_info();
         CHECK(ti.is_array());
-        return makeExpr<Analyzer::UOper>(ti.get_elem_type(), false, kUNNEST, operand_expr);
+        return makeExpr<Analyzer::UOper>(
+            ti.get_elem_type(), false, kUNNEST, operand_expr);
       }
       default: {
         CHECK(sql_op == kFUNCTION || sql_op == kIN);
@@ -274,9 +300,10 @@ class CalciteAdapter {
     return nullptr;
   }
 
-  std::shared_ptr<Analyzer::Expr> translateLike(const rapidjson::Value& expr,
-                                                const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
-                                                const bool is_ilike) {
+  std::shared_ptr<Analyzer::Expr> translateLike(
+      const rapidjson::Value& expr,
+      const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
+      const bool is_ilike) {
     const auto& operands = expr["operands"];
     CHECK_GE(operands.Size(), unsigned(2));
     auto lhs = getExprFromNode(operands[0], scan_targets);
@@ -320,7 +347,8 @@ class CalciteAdapter {
     const auto& operands = expr["operands"];
     CHECK_GE(operands.Size(), unsigned(2));
     std::shared_ptr<Analyzer::Expr> else_expr;
-    std::list<std::pair<std::shared_ptr<Analyzer::Expr>, std::shared_ptr<Analyzer::Expr>>> expr_list;
+    std::list<std::pair<std::shared_ptr<Analyzer::Expr>, std::shared_ptr<Analyzer::Expr>>>
+        expr_list;
     for (auto operands_it = operands.Begin(); operands_it != operands.End();) {
       const auto when_expr = getExprFromNode(*operands_it++, scan_targets);
       if (operands_it == operands.End()) {
@@ -341,10 +369,13 @@ class CalciteAdapter {
     CHECK_EQ(operands.Size(), unsigned(2));
     auto base = getExprFromNode(operands[0], scan_targets);
     auto index = getExprFromNode(operands[1], scan_targets);
-    return makeExpr<Analyzer::BinOper>(base->get_type_info().get_elem_type(), false, kARRAY_AT, kONE, base, index);
+    return makeExpr<Analyzer::BinOper>(
+        base->get_type_info().get_elem_type(), false, kARRAY_AT, kONE, base, index);
   }
 
-  std::shared_ptr<Analyzer::Expr> translateNow() { return Parser::TimestampLiteral::get(now_); }
+  std::shared_ptr<Analyzer::Expr> translateNow() {
+    return Parser::TimestampLiteral::get(now_);
+  }
 
   std::shared_ptr<Analyzer::Expr> translateExtract(
       const rapidjson::Value& operands,
@@ -356,11 +387,36 @@ class CalciteAdapter {
     if (!timeunit_lit.IsObject() || !timeunit_lit.HasMember("literal")) {
       throw std::runtime_error("The time unit parameter must be a literal.");
     }
-    const auto timeunit_lit_expr =
-        std::dynamic_pointer_cast<const Analyzer::Constant>(translateTypedLiteral(timeunit_lit));
+    const auto timeunit_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(
+        translateTypedLiteral(timeunit_lit));
     const auto from_expr = getExprFromNode(operands[1], scan_targets);
-    return is_date_trunc ? Parser::DatetruncExpr::get(from_expr, *timeunit_lit_expr->get_constval().stringval)
-                         : Parser::ExtractExpr::get(from_expr, *timeunit_lit_expr->get_constval().stringval);
+    if (is_date_trunc) {
+      return DateTruncExpr::generate(from_expr,
+                                     *timeunit_lit_expr->get_constval().stringval);
+    } else {
+      return ExtractExpr::generate(from_expr,
+                                   *timeunit_lit_expr->get_constval().stringval);
+    }
+  }
+
+  std::shared_ptr<Analyzer::Expr> translateDateadd(
+      const rapidjson::Value& operands,
+      const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets) {
+    CHECK(operands.IsArray());
+    CHECK_EQ(unsigned(3), operands.Size());
+    const auto& timeunit_lit = operands[0];
+    if (!timeunit_lit.IsObject() || !timeunit_lit.HasMember("literal")) {
+      throw std::runtime_error("The time unit parameter must be a literal.");
+    }
+    const auto timeunit_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(
+        translateTypedLiteral(timeunit_lit));
+    const auto number_units = getExprFromNode(operands[1], scan_targets);
+    const auto datetime = getExprFromNode(operands[2], scan_targets);
+    return makeExpr<Analyzer::DateaddExpr>(
+        SQLTypeInfo(kTIMESTAMP, false),
+        to_dateadd_field(*timeunit_lit_expr->get_constval().stringval),
+        number_units,
+        datetime);
   }
 
   std::shared_ptr<Analyzer::Expr> translateDatediff(
@@ -372,12 +428,15 @@ class CalciteAdapter {
     if (!timeunit_lit.IsObject() || !timeunit_lit.HasMember("literal")) {
       throw std::runtime_error("The time unit parameter must be a literal.");
     }
-    const auto timeunit_lit_expr =
-        std::dynamic_pointer_cast<const Analyzer::Constant>(translateTypedLiteral(timeunit_lit));
+    const auto timeunit_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(
+        translateTypedLiteral(timeunit_lit));
     const auto start = getExprFromNode(operands[1], scan_targets);
     const auto end = getExprFromNode(operands[2], scan_targets);
     return makeExpr<Analyzer::DatediffExpr>(
-        SQLTypeInfo(kBIGINT, false), to_datediff_field(*timeunit_lit_expr->get_constval().stringval), start, end);
+        SQLTypeInfo(kBIGINT, false),
+        to_datediff_field(*timeunit_lit_expr->get_constval().stringval),
+        start,
+        end);
   }
 
   std::shared_ptr<Analyzer::Expr> translateDatepart(
@@ -389,10 +448,11 @@ class CalciteAdapter {
     if (!timeunit_lit.IsObject() || !timeunit_lit.HasMember("literal")) {
       throw std::runtime_error("The time unit parameter must be a literal.");
     }
-    const auto timeunit_lit_expr =
-        std::dynamic_pointer_cast<const Analyzer::Constant>(translateTypedLiteral(timeunit_lit));
+    const auto timeunit_lit_expr = std::dynamic_pointer_cast<const Analyzer::Constant>(
+        translateTypedLiteral(timeunit_lit));
     const auto from_expr = getExprFromNode(operands[1], scan_targets);
-    return Parser::ExtractExpr::get(from_expr, to_datepart_field(*timeunit_lit_expr->get_constval().stringval));
+    return ExtractExpr::generate(
+        from_expr, to_datepart_field(*timeunit_lit_expr->get_constval().stringval));
   }
 
   std::shared_ptr<Analyzer::Expr> translateColRef(
@@ -401,7 +461,8 @@ class CalciteAdapter {
     int col_name_idx = expr["input"].GetInt();
     CHECK_GE(col_name_idx, 0);
     if (static_cast<size_t>(col_name_idx) < scan_targets.size()) {
-      auto var_expr = std::dynamic_pointer_cast<Analyzer::Var>(scan_targets[col_name_idx]->get_own_expr());
+      auto var_expr = std::dynamic_pointer_cast<Analyzer::Var>(
+          scan_targets[col_name_idx]->get_own_expr());
       if (var_expr) {
         return var_expr;
       }
@@ -413,7 +474,8 @@ class CalciteAdapter {
         const auto cd = cat_.getMetadataForColumn(col_name_td.td_->tableId, col_name);
         CHECK(cd);
         used_columns_[col_name_td.td_->tableId].insert(cd->columnId);
-        return makeExpr<Analyzer::ColumnVar>(cd->columnType, col_name_td.td_->tableId, cd->columnId, rte_idx);
+        return makeExpr<Analyzer::ColumnVar>(
+            cd->columnType, col_name_td.td_->tableId, cd->columnId, rte_idx);
       }
       col_name_idx -= col_name_td.names_.size();
       ++rte_idx;
@@ -437,7 +499,7 @@ class CalciteAdapter {
     }
     const auto arg_expr = takes_arg ? scan_targets[operand]->get_own_expr() : nullptr;
     const auto agg_ti = get_agg_type(agg_kind, arg_expr.get());
-    return makeExpr<Analyzer::AggExpr>(agg_ti, agg_kind, arg_expr, is_distinct);
+    return makeExpr<Analyzer::AggExpr>(agg_ti, agg_kind, arg_expr, is_distinct, nullptr);
   }
 
   std::shared_ptr<Analyzer::Expr> translateTypedLiteral(const rapidjson::Value& expr) {
@@ -454,28 +516,29 @@ class CalciteAdapter {
         if (target_ti.is_fp() && !scale) {
           return make_fp_constant(val, target_ti);
         }
-        auto lit_expr =
-            scale ? Parser::FixedPtLiteral::analyzeValue(val, scale, precision) : Parser::IntLiteral::analyzeValue(val);
+        auto lit_expr = scale
+                            ? Parser::FixedPtLiteral::analyzeValue(val, scale, precision)
+                            : Parser::IntLiteral::analyzeValue(val);
         return scale && lit_ti != target_ti ? lit_expr->add_cast(target_ti) : lit_expr;
       }
       case kINTERVAL_DAY_TIME:
       case kINTERVAL_YEAR_MONTH: {
         CHECK(json_val->IsInt64());
         Datum d;
-        d.timeval = json_val->GetInt64();
+        d.bigintval = json_val->GetInt64();
         return makeExpr<Analyzer::Constant>(lit_ti.get_type(), false, d);
       }
       case kTIME:
       case kTIMESTAMP: {
         CHECK(json_val->IsInt64());
         Datum d;
-        d.timeval = json_val->GetInt64() / 1000;
+        d.bigintval = json_val->GetInt64() / 1000;
         return makeExpr<Analyzer::Constant>(lit_ti.get_type(), false, d);
       }
       case kDATE: {
         CHECK(json_val->IsInt64());
         Datum d;
-        d.timeval = json_val->GetInt64() * 24 * 3600;
+        d.bigintval = json_val->GetInt64() * 24 * 3600;
         return makeExpr<Analyzer::Constant>(lit_ti.get_type(), false, d);
       }
       case kTEXT: {
@@ -501,7 +564,9 @@ class CalciteAdapter {
         const auto& target_ti = std::get<2>(parsed_lit);
         return makeExpr<Analyzer::Constant>(target_ti.get_type(), true, Datum{0});
       }
-      default: { LOG(FATAL) << "Unexpected literal type " << lit_ti.get_type_name(); }
+      default: {
+        LOG(FATAL) << "Unexpected literal type " << lit_ti.get_type_name();
+      }
     }
     return nullptr;
   }
@@ -532,9 +597,10 @@ class CalciteAdapter {
     const auto& col_names_node = scan_ra["fieldNames"];
     CHECK(col_names_node.IsArray());
     std::vector<std::string> result;
-    for (auto field_it = col_names_node.Begin(); field_it != col_names_node.End(); ++field_it) {
+    for (auto field_it = col_names_node.Begin(); field_it != col_names_node.End();
+         ++field_it) {
       CHECK(field_it->IsString());
-      result.push_back(field_it->GetString());
+      result.emplace_back(field_it->GetString());
     }
     return result;
   }
@@ -559,9 +625,10 @@ class CalciteAdapter {
   std::vector<ColNames> col_names_;
 };
 
-void reproject_target_entries(std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets,
-                              const std::vector<size_t>& result_proj_indices,
-                              const rapidjson::Value& fields) {
+void reproject_target_entries(
+    std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets,
+    const std::vector<size_t>& result_proj_indices,
+    const rapidjson::Value& fields) {
   CHECK(fields.IsArray());
   CHECK_EQ(static_cast<size_t>(fields.Size()), result_proj_indices.size());
   if (result_proj_indices.empty()) {
@@ -574,8 +641,8 @@ void reproject_target_entries(std::vector<std::shared_ptr<Analyzer::TargetEntry>
     CHECK(fields_it != fields.End());
     CHECK(fields_it->IsString());
     const auto te = agg_targets[proj_idx];
-    agg_targets_reproj.emplace_back(
-        new Analyzer::TargetEntry(fields_it->GetString(), te->get_own_expr(), te->get_unnest()));
+    agg_targets_reproj.emplace_back(new Analyzer::TargetEntry(
+        fields_it->GetString(), te->get_own_expr(), te->get_unnest()));
     ++fields_it;
   }
   agg_targets.swap(agg_targets_reproj);
@@ -600,25 +667,29 @@ LogicalSortInfo get_logical_sort_info(const rapidjson::Value& rels) {
     if (!found) {
       if (sort_rel.HasMember("fetch")) {
         const auto& limit_lit = parse_literal(sort_rel["fetch"]);
-        CHECK(std::get<1>(limit_lit).is_decimal() && std::get<1>(limit_lit).get_scale() == 0);
+        CHECK(std::get<1>(limit_lit).is_decimal() &&
+              std::get<1>(limit_lit).get_scale() == 0);
         CHECK(std::get<0>(limit_lit)->IsInt64());
         result.limit = std::get<0>(limit_lit)->GetInt64();
       }
       if (sort_rel.HasMember("offset")) {
         const auto& offset_lit = parse_literal(sort_rel["offset"]);
-        CHECK(std::get<1>(offset_lit).is_decimal() && std::get<1>(offset_lit).get_scale() == 0);
+        CHECK(std::get<1>(offset_lit).is_decimal() &&
+              std::get<1>(offset_lit).get_scale() == 0);
         CHECK(std::get<0>(offset_lit)->IsInt64());
         result.offset = std::get<0>(offset_lit)->GetInt64();
       }
       CHECK(sort_rel.HasMember("collation"));
       const auto& collation = sort_rel["collation"];
       CHECK(collation.IsArray());
-      for (auto collation_it = collation.Begin(); collation_it != collation.End(); ++collation_it) {
+      for (auto collation_it = collation.Begin(); collation_it != collation.End();
+           ++collation_it) {
         const auto& oe_node = *collation_it;
         CHECK(oe_node.IsObject());
-        result.order_entries.emplace_back(oe_node["field"].GetInt() + 1,
-                                          std::string("DESCENDING") == oe_node["direction"].GetString(),
-                                          std::string("FIRST") == oe_node["nulls"].GetString());
+        result.order_entries.emplace_back(
+            oe_node["field"].GetInt() + 1,
+            std::string("DESCENDING") == oe_node["direction"].GetString(),
+            std::string("FIRST") == oe_node["nulls"].GetString());
       }
       found = true;
     } else {
@@ -626,13 +697,15 @@ LogicalSortInfo get_logical_sort_info(const rapidjson::Value& rels) {
       // in the Calcite AST. Validation for now, but maybe they can be different?
       if (sort_rel.HasMember("fetch")) {
         const auto& limit_lit = parse_literal(sort_rel["fetch"]);
-        CHECK(std::get<1>(limit_lit).is_decimal() && std::get<1>(limit_lit).get_scale() == 0);
+        CHECK(std::get<1>(limit_lit).is_decimal() &&
+              std::get<1>(limit_lit).get_scale() == 0);
         CHECK(std::get<0>(limit_lit)->IsInt64());
         CHECK_EQ(result.limit, std::get<0>(limit_lit)->GetInt64());
       }
       if (sort_rel.HasMember("offset")) {
         const auto& offset_lit = parse_literal(sort_rel["offset"]);
-        CHECK(std::get<1>(offset_lit).is_decimal() && std::get<1>(offset_lit).get_scale() == 0);
+        CHECK(std::get<1>(offset_lit).is_decimal() &&
+              std::get<1>(offset_lit).get_scale() == 0);
         CHECK(std::get<0>(offset_lit)->IsInt64());
         CHECK_EQ(result.offset, std::get<0>(offset_lit)->GetInt64());
       }
@@ -644,7 +717,8 @@ LogicalSortInfo get_logical_sort_info(const rapidjson::Value& rels) {
       for (size_t i = 0; i < result.order_entries.size(); ++i, ++oe_it) {
         const auto& oe_node = collation[i];
         const auto& oe = *oe_it;
-        CHECK_EQ(oe.is_desc, std::string("DESCENDING") == oe_node["direction"].GetString());
+        CHECK_EQ(oe.is_desc,
+                 std::string("DESCENDING") == oe_node["direction"].GetString());
         CHECK_EQ(oe.nulls_first, std::string("FIRST") == oe_node["nulls"].GetString());
       }
     }
@@ -652,22 +726,29 @@ LogicalSortInfo get_logical_sort_info(const rapidjson::Value& rels) {
   return result;
 }
 
-Planner::Scan* get_scan_plan(const TableDescriptor* td,
-                             const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
-                             std::list<std::shared_ptr<Analyzer::Expr>>& q,
-                             std::list<std::shared_ptr<Analyzer::Expr>>& sq,
-                             CalciteAdapter& calcite_adapter) {
-  return new Planner::Scan(
-      scan_targets, q, 0., nullptr, sq, td->tableId, calcite_adapter.getUsedColumnList(td->tableId));
+Planner::Scan* get_scan_plan(
+    const TableDescriptor* td,
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
+    std::list<std::shared_ptr<Analyzer::Expr>>& q,
+    std::list<std::shared_ptr<Analyzer::Expr>>& sq,
+    CalciteAdapter& calcite_adapter) {
+  return new Planner::Scan(scan_targets,
+                           q,
+                           0.,
+                           nullptr,
+                           sq,
+                           td->tableId,
+                           calcite_adapter.getUsedColumnList(td->tableId));
 }
 
-Planner::Plan* get_agg_plan(const TableDescriptor* td,
-                            const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
-                            const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets,
-                            const std::list<std::shared_ptr<Analyzer::Expr>>& groupby_exprs,
-                            std::list<std::shared_ptr<Analyzer::Expr>>& q,
-                            std::list<std::shared_ptr<Analyzer::Expr>>& sq,
-                            CalciteAdapter& calcite_adapter) {
+Planner::Plan* get_agg_plan(
+    const TableDescriptor* td,
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets,
+    const std::list<std::shared_ptr<Analyzer::Expr>>& groupby_exprs,
+    std::list<std::shared_ptr<Analyzer::Expr>>& q,
+    std::list<std::shared_ptr<Analyzer::Expr>>& sq,
+    CalciteAdapter& calcite_adapter) {
   Planner::Plan* plan = get_scan_plan(td, scan_targets, q, sq, calcite_adapter);
   if (!agg_targets.empty()) {
     plan = new Planner::AggPlan(agg_targets, 0., plan, groupby_exprs);
@@ -675,14 +756,17 @@ Planner::Plan* get_agg_plan(const TableDescriptor* td,
   return plan;
 }
 
-Planner::Plan* get_sort_plan(Planner::Plan* plan,
-                             const rapidjson::Value& rels,
-                             const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
-                             const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets) {
+Planner::Plan* get_sort_plan(
+    Planner::Plan* plan,
+    const rapidjson::Value& rels,
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& scan_targets,
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& agg_targets) {
   const auto logical_sort_info = get_logical_sort_info(rels);
   if (!logical_sort_info.order_entries.empty()) {
-    const auto& sort_target_entries = agg_targets.empty() ? scan_targets : agg_targets;  // TODO(alex)
-    plan = new Planner::Sort(sort_target_entries, 0, plan, logical_sort_info.order_entries, false);
+    const auto& sort_target_entries =
+        agg_targets.empty() ? scan_targets : agg_targets;  // TODO(alex)
+    plan = new Planner::Sort(
+        sort_target_entries, 0, plan, logical_sort_info.order_entries, false);
   }
   return plan;
 }
@@ -708,11 +792,13 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> get_input_targets(
   std::vector<std::shared_ptr<Analyzer::TargetEntry>> result;
   if (in_targets.empty()) {
     auto fields_it = fields.Begin();
-    for (auto exprs_it = exprs.Begin(); exprs_it != exprs.End(); ++exprs_it, ++fields_it) {
+    for (auto exprs_it = exprs.Begin(); exprs_it != exprs.End();
+         ++exprs_it, ++fields_it) {
       const auto proj_expr = calcite_adapter.getExprFromNode(*exprs_it, in_targets);
       CHECK(fields_it != exprs.End());
       CHECK(fields_it->IsString());
-      result.emplace_back(new Analyzer::TargetEntry(fields_it->GetString(), proj_expr, false));
+      result.emplace_back(
+          new Analyzer::TargetEntry(fields_it->GetString(), proj_expr, false));
     }
   } else {
     result = in_targets;
@@ -737,7 +823,9 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> build_var_refs(
   for (size_t i = 1; i <= in_targets.size(); ++i) {
     const auto target = in_targets[i - 1];
     var_refs_to_in_targets.emplace_back(new Analyzer::TargetEntry(
-        target->get_resname(), var_ref(target->get_expr(), Analyzer::Var::kINPUT_OUTER, i), false));
+        target->get_resname(),
+        var_ref(target->get_expr(), Analyzer::Var::kINPUT_OUTER, i),
+        false));
   }
   return var_refs_to_in_targets;
 }
@@ -753,15 +841,18 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> build_result_plan_targets(
   CHECK_EQ(exprs.Size(), fields.Size());
   auto fields_it = fields.Begin();
   for (auto exprs_it = exprs.Begin(); exprs_it != exprs.End(); ++exprs_it, ++fields_it) {
-    const auto analyzer_expr = calcite_adapter.getExprFromNode(*exprs_it, var_refs_to_in_targets);
+    const auto analyzer_expr =
+        calcite_adapter.getExprFromNode(*exprs_it, var_refs_to_in_targets);
     CHECK(fields_it != exprs.End());
     CHECK(fields_it->IsString());
-    result.emplace_back(new Analyzer::TargetEntry(fields_it->GetString(), analyzer_expr, false));
+    result.emplace_back(
+        new Analyzer::TargetEntry(fields_it->GetString(), analyzer_expr, false));
   }
   return result;
 }
 
-bool targets_are_refs(const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& in_targets) {
+bool targets_are_refs(
+    const std::vector<std::shared_ptr<Analyzer::TargetEntry>>& in_targets) {
   CHECK(!in_targets.empty());
   for (const auto target : in_targets) {
     if (!dynamic_cast<const Analyzer::Var*>(target->get_expr())) {
@@ -808,7 +899,8 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> handle_logical_aggregate(
   const auto& agg_nodes = logical_aggregate["aggs"];
   const auto& group_nodes = logical_aggregate["group"];
   CHECK(group_nodes.IsArray());
-  for (auto group_nodes_it = group_nodes.Begin(); group_nodes_it != group_nodes.End(); ++group_nodes_it) {
+  for (auto group_nodes_it = group_nodes.Begin(); group_nodes_it != group_nodes.End();
+       ++group_nodes_it) {
     CHECK(group_nodes_it->IsInt());
     const int target_idx = group_nodes_it->GetInt();
     groupby_exprs.push_back(set_transient_dict(in_targets[target_idx]->get_own_expr()));
@@ -817,7 +909,8 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> handle_logical_aggregate(
   const auto& fields = logical_aggregate["fields"];
   CHECK(fields.IsArray());
   auto fields_it = fields.Begin();
-  for (auto group_nodes_it = group_nodes.Begin(); group_nodes_it != group_nodes.End(); ++group_nodes_it, ++fields_it) {
+  for (auto group_nodes_it = group_nodes.Begin(); group_nodes_it != group_nodes.End();
+       ++group_nodes_it, ++fields_it) {
     CHECK(group_nodes_it->IsInt());
     const int target_idx = group_nodes_it->GetInt();
     const auto target = in_targets[target_idx];
@@ -827,14 +920,19 @@ std::vector<std::shared_ptr<Analyzer::TargetEntry>> handle_logical_aggregate(
     const auto target_expr = set_transient_dict(target->get_own_expr());
     const auto uoper_expr = dynamic_cast<const Analyzer::UOper*>(target_expr.get());
     const bool is_unnest{uoper_expr && uoper_expr->get_optype() == kUNNEST};
-    auto group_var_ref = var_ref(target_expr.get(), Analyzer::Var::kGROUPBY, group_nodes_it - group_nodes.Begin() + 1);
-    result.emplace_back(new Analyzer::TargetEntry(target->get_resname(), group_var_ref, is_unnest));
+    auto group_var_ref = var_ref(target_expr.get(),
+                                 Analyzer::Var::kGROUPBY,
+                                 group_nodes_it - group_nodes.Begin() + 1);
+    result.emplace_back(
+        new Analyzer::TargetEntry(target->get_resname(), group_var_ref, is_unnest));
   }
-  for (auto agg_nodes_it = agg_nodes.Begin(); agg_nodes_it != agg_nodes.End(); ++agg_nodes_it, ++fields_it) {
+  for (auto agg_nodes_it = agg_nodes.Begin(); agg_nodes_it != agg_nodes.End();
+       ++agg_nodes_it, ++fields_it) {
     auto agg_expr = calcite_adapter.getExprFromNode(*agg_nodes_it, in_targets);
     CHECK(fields_it != fields.End());
     CHECK(fields_it->IsString());
-    result.emplace_back(new Analyzer::TargetEntry(fields_it->GetString(), agg_expr, false));
+    result.emplace_back(
+        new Analyzer::TargetEntry(fields_it->GetString(), agg_expr, false));
   }
   return result;
 }
@@ -895,6 +993,18 @@ void collect_used_columns(std::vector<std::shared_ptr<Analyzer::ColumnVar>>& use
     collect_used_columns(used_cols, charlength_expr->get_own_arg());
     return;
   }
+  const auto keyforstring_expr =
+      std::dynamic_pointer_cast<Analyzer::KeyForStringExpr>(expr);
+  if (keyforstring_expr) {
+    collect_used_columns(used_cols, keyforstring_expr->get_own_arg());
+    return;
+  }
+  const auto cardinality_expr =
+      std::dynamic_pointer_cast<Analyzer::CardinalityExpr>(expr);
+  if (cardinality_expr) {
+    collect_used_columns(used_cols, cardinality_expr->get_own_arg());
+    return;
+  }
   const auto like_expr = std::dynamic_pointer_cast<Analyzer::LikeExpr>(expr);
   if (like_expr) {
     collect_used_columns(used_cols, like_expr->get_own_arg());
@@ -902,7 +1012,8 @@ void collect_used_columns(std::vector<std::shared_ptr<Analyzer::ColumnVar>>& use
   }
 }
 
-std::unordered_set<int> get_used_table_ids(const std::vector<std::shared_ptr<Analyzer::ColumnVar>>& used_cols) {
+std::unordered_set<int> get_used_table_ids(
+    const std::vector<std::shared_ptr<Analyzer::ColumnVar>>& used_cols) {
   std::unordered_set<int> result;
   for (const auto col_var : used_cols) {
     result.insert(col_var->get_table_id());
@@ -910,9 +1021,10 @@ std::unordered_set<int> get_used_table_ids(const std::vector<std::shared_ptr<Ana
   return result;
 }
 
-void separate_join_quals(std::unordered_map<int, std::list<std::shared_ptr<Analyzer::Expr>>>& quals,
-                         std::list<std::shared_ptr<Analyzer::Expr>>& join_quals,
-                         const std::list<std::shared_ptr<Analyzer::Expr>>& all_quals) {
+void separate_join_quals(
+    std::unordered_map<int, std::list<std::shared_ptr<Analyzer::Expr>>>& quals,
+    std::list<std::shared_ptr<Analyzer::Expr>>& join_quals,
+    const std::list<std::shared_ptr<Analyzer::Expr>>& all_quals) {
   for (auto qual_candidate : all_quals) {
     std::vector<std::shared_ptr<Analyzer::ColumnVar>> used_columns;
     collect_used_columns(used_columns, qual_candidate);
@@ -1000,11 +1112,11 @@ bool match_sort_seq(rapidjson::Value::ConstValueIterator& rels_it,
 // the nodes and reject queries which go beyond the legacy front-end.
 bool query_is_supported(const rapidjson::Value& rels) {
   rapidjson::Value::ConstValueIterator rels_it = rels.Begin();
-  if (std::string("LogicalTableScan") != get_op_name(*rels_it++)) {
+  if (std::string("EnumerableTableScan") != get_op_name(*rels_it++)) {
     return false;
   }
   const auto op_name = get_op_name(*rels_it);
-  if (op_name == std::string("LogicalTableScan")) {
+  if (op_name == std::string("EnumerableTableScan")) {
     ++rels_it;
     CHECK(rels_it != rels.End());
     if (get_op_name(*rels_it++) != std::string("LogicalJoin")) {
@@ -1035,7 +1147,8 @@ bool query_is_supported(const rapidjson::Value& rels) {
 
 }  // namespace
 
-Planner::RootPlan* translate_query(const std::string& query, const Catalog_Namespace::Catalog& cat) {
+Planner::RootPlan* translate_query(const std::string& query,
+                                   const Catalog_Namespace::Catalog& cat) {
   rapidjson::Document query_ast;
   query_ast.Parse(query.c_str());
   CHECK(!query_ast.HasParseError());
@@ -1062,31 +1175,39 @@ Planner::RootPlan* translate_query(const std::string& query, const Catalog_Names
     const auto rel_op_it = crt_node.FindMember("relOp");
     CHECK(rel_op_it != crt_node.MemberEnd());
     CHECK(rel_op_it->value.IsString());
-    if (rel_op_it->value.GetString() == std::string("LogicalTableScan") ||
+    if (rel_op_it->value.GetString() == std::string("EnumerableTableScan") ||
         rel_op_it->value.GetString() == std::string("LogicalSort")) {
       continue;
     }
     if (rel_op_it->value.GetString() == std::string("LogicalProject")) {
-      res_targets = handle_logical_project(child_res_targets, res_targets, crt_node, calcite_adapter);
+      res_targets = handle_logical_project(
+          child_res_targets, res_targets, crt_node, calcite_adapter);
     } else if (rel_op_it->value.GetString() == std::string("LogicalAggregate")) {
       is_agg_plan = true;
       CHECK(!res_targets.empty());
-      res_targets = handle_logical_aggregate(res_targets, groupby_exprs, crt_node, calcite_adapter);
+      res_targets =
+          handle_logical_aggregate(res_targets, groupby_exprs, crt_node, calcite_adapter);
     } else if (rel_op_it->value.GetString() == std::string("LogicalFilter")) {
       if (res_targets.empty()) {
         if (is_join) {
-          add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], {}), all_join_simple_quals, all_join_quals);
+          add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], {}),
+                    all_join_simple_quals,
+                    all_join_quals);
         } else {
-          add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], {}), simple_quals, quals);
+          add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], {}),
+                    simple_quals,
+                    quals);
         }
       } else {
         child_res_targets = res_targets;
         res_targets = build_var_refs(res_targets);
-        add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], res_targets), result_quals, result_quals);
+        add_quals(calcite_adapter.getExprFromNode(crt_node["condition"], res_targets),
+                  result_quals,
+                  result_quals);
       }
     } else if (rel_op_it->value.GetString() == std::string("LogicalJoin")) {
-      const auto condition =
-          std::dynamic_pointer_cast<Analyzer::Constant>(calcite_adapter.getExprFromNode(crt_node["condition"], {}));
+      const auto condition = std::dynamic_pointer_cast<Analyzer::Constant>(
+          calcite_adapter.getExprFromNode(crt_node["condition"], {}));
       if (!condition) {
         throw std::runtime_error("Unsupported join condition");
       }
@@ -1098,7 +1219,8 @@ Planner::RootPlan* translate_query(const std::string& query, const Catalog_Names
       // TODO(alex): use the information in this node?
       is_join = true;
     } else {
-      throw std::runtime_error(std::string("Node ") + rel_op_it->value.GetString() + " not supported yet");
+      throw std::runtime_error(std::string("Node ") + rel_op_it->value.GetString() +
+                               " not supported yet");
     }
   }
   const auto tds = calcite_adapter.getTableDescriptors();
@@ -1120,10 +1242,20 @@ Planner::RootPlan* translate_query(const std::string& query, const Catalog_Names
     CHECK_LE(scan_simple_quals.size(), size_t(2));
     const int outer_tid = tds[0]->tableId;
     const int inner_tid = tds[1]->tableId;
-    auto outer_plan = get_agg_plan(
-        tds[0], {}, {}, groupby_exprs, scan_quals[outer_tid], scan_simple_quals[outer_tid], calcite_adapter);
-    auto inner_plan = get_agg_plan(
-        tds[1], {}, {}, groupby_exprs, scan_quals[inner_tid], scan_simple_quals[inner_tid], calcite_adapter);
+    auto outer_plan = get_agg_plan(tds[0],
+                                   {},
+                                   {},
+                                   groupby_exprs,
+                                   scan_quals[outer_tid],
+                                   scan_simple_quals[outer_tid],
+                                   calcite_adapter);
+    auto inner_plan = get_agg_plan(tds[1],
+                                   {},
+                                   {},
+                                   groupby_exprs,
+                                   scan_quals[inner_tid],
+                                   scan_simple_quals[inner_tid],
+                                   calcite_adapter);
     if (child_res_targets.empty()) {
       if (is_agg_plan) {
         plan = new Planner::Join({}, join_quals, 0, outer_plan, inner_plan);
@@ -1136,86 +1268,126 @@ Planner::RootPlan* translate_query(const std::string& query, const Catalog_Names
         plan = new Planner::Join({}, join_quals, 0, outer_plan, inner_plan);
         plan = new Planner::AggPlan(child_res_targets, 0., plan, groupby_exprs);
       } else {
-        plan = new Planner::Join(child_res_targets, join_quals, 0, outer_plan, inner_plan);
+        plan =
+            new Planner::Join(child_res_targets, join_quals, 0, outer_plan, inner_plan);
       }
       plan = new Planner::Result(res_targets, result_quals, 0, plan, {});
     }
   } else if (child_res_targets.empty()) {
     std::vector<std::shared_ptr<Analyzer::TargetEntry>> agg_targets{
-        is_agg_plan ? res_targets : std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}};
+        is_agg_plan ? res_targets
+                    : std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}};
     std::vector<std::shared_ptr<Analyzer::TargetEntry>> scan_targets{
-        is_agg_plan ? std::vector<std::shared_ptr<Analyzer::TargetEntry>>{} : res_targets};
-    plan = get_agg_plan(tds[0], scan_targets, agg_targets, groupby_exprs, quals, simple_quals, calcite_adapter);
+        is_agg_plan ? std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}
+                    : res_targets};
+    plan = get_agg_plan(tds[0],
+                        scan_targets,
+                        agg_targets,
+                        groupby_exprs,
+                        quals,
+                        simple_quals,
+                        calcite_adapter);
   } else {
     std::vector<std::shared_ptr<Analyzer::TargetEntry>> agg_targets{
-        is_agg_plan ? child_res_targets : std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}};
+        is_agg_plan ? child_res_targets
+                    : std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}};
     std::vector<std::shared_ptr<Analyzer::TargetEntry>> scan_targets{
-        is_agg_plan ? std::vector<std::shared_ptr<Analyzer::TargetEntry>>{} : child_res_targets};
-    plan = get_agg_plan(tds[0], scan_targets, agg_targets, groupby_exprs, quals, simple_quals, calcite_adapter);
+        is_agg_plan ? std::vector<std::shared_ptr<Analyzer::TargetEntry>>{}
+                    : child_res_targets};
+    plan = get_agg_plan(tds[0],
+                        scan_targets,
+                        agg_targets,
+                        groupby_exprs,
+                        quals,
+                        simple_quals,
+                        calcite_adapter);
     plan = new Planner::Result(res_targets, result_quals, 0, plan, {});
   }
   CHECK(plan);
   const auto logical_sort_info = get_logical_sort_info(rels);
   plan = get_sort_plan(plan, rels, {}, res_targets);
-  return new Planner::RootPlan(
-      plan, kSELECT, tds[0]->tableId, {}, cat, logical_sort_info.limit, logical_sort_info.offset);
+  return new Planner::RootPlan(plan,
+                               kSELECT,
+                               tds[0]->tableId,
+                               {},
+                               cat,
+                               logical_sort_info.limit,
+                               logical_sort_info.offset);
 }
 
-std::string pg_shim(const std::string& query) {
+namespace {
+
+std::string pg_shim_impl(const std::string& query) {
   auto result = query;
   {
-    boost::regex unnest_expr{R"((\s+|,)(unnest)\s*\()", boost::regex::extended | boost::regex::icase};
+    boost::regex unnest_expr{R"((\s+|,)(unnest)\s*\()",
+                             boost::regex::extended | boost::regex::icase};
     apply_shim(result, unnest_expr, [](std::string& result, const boost::smatch& what) {
       result.replace(what.position(), what.length(), what[1] + "PG_UNNEST(");
     });
   }
   {
-    boost::regex cast_true_expr{R"(CAST\s*\(\s*'t'\s+AS\s+boolean\s*\))", boost::regex::extended | boost::regex::icase};
-    apply_shim(result, cast_true_expr, [](std::string& result, const boost::smatch& what) {
-      result.replace(what.position(), what.length(), "true");
-    });
+    boost::regex cast_true_expr{R"(CAST\s*\(\s*'t'\s+AS\s+boolean\s*\))",
+                                boost::regex::extended | boost::regex::icase};
+    apply_shim(
+        result, cast_true_expr, [](std::string& result, const boost::smatch& what) {
+          result.replace(what.position(), what.length(), "true");
+        });
   }
   {
     boost::regex cast_false_expr{R"(CAST\s*\(\s*'f'\s+AS\s+boolean\s*\))",
                                  boost::regex::extended | boost::regex::icase};
-    apply_shim(result, cast_false_expr, [](std::string& result, const boost::smatch& what) {
-      result.replace(what.position(), what.length(), "false");
-    });
+    apply_shim(
+        result, cast_false_expr, [](std::string& result, const boost::smatch& what) {
+          result.replace(what.position(), what.length(), "false");
+        });
   }
   {
-    boost::regex ilike_expr{R"((\s+)([^\s]+)\s+ilike\s+('(?:[^']+|'')+')(\s+escape(\s+('[^']+')))?)",
-                            boost::regex::perl | boost::regex::icase};
+    boost::regex ilike_expr{
+        R"((\s+|\()((?!\()[^\s]+)\s+ilike\s+('(?:[^']+|'')+')(\s+escape(\s+('[^']+')))?)",
+        boost::regex::perl | boost::regex::icase};
     apply_shim(result, ilike_expr, [](std::string& result, const boost::smatch& what) {
       std::string esc = what[6];
       result.replace(what.position(),
                      what.length(),
-                     what[1] + "PG_ILIKE(" + what[2] + ", " + what[3] + (esc.empty() ? "" : ", " + esc) + ")");
+                     what[1] + "PG_ILIKE(" + what[2] + ", " + what[3] +
+                         (esc.empty() ? "" : ", " + esc) + ")");
     });
   }
   {
-    boost::regex regexp_expr{R"((\s+)([^\s]+)\s+REGEXP\s+('(?:[^']+|'')+')(\s+escape(\s+('[^']+')))?)",
-                             boost::regex::perl | boost::regex::icase};
+    boost::regex regexp_expr{
+        R"((\s+)([^\s]+)\s+REGEXP\s+('(?:[^']+|'')+')(\s+escape(\s+('[^']+')))?)",
+        boost::regex::perl | boost::regex::icase};
     apply_shim(result, regexp_expr, [](std::string& result, const boost::smatch& what) {
       std::string esc = what[6];
       result.replace(what.position(),
                      what.length(),
-                     what[1] + "REGEXP_LIKE(" + what[2] + ", " + what[3] + (esc.empty() ? "" : ", " + esc) + ")");
+                     what[1] + "REGEXP_LIKE(" + what[2] + ", " + what[3] +
+                         (esc.empty() ? "" : ", " + esc) + ")");
     });
   }
   {
-    boost::regex extract_expr{R"(extract\s*\(\s*(\w+)\s+from\s+(.+)\))", boost::regex::extended | boost::regex::icase};
+    boost::regex extract_expr{R"(extract\s*\(\s*(\w+)\s+from\s+(.+)\))",
+                              boost::regex::extended | boost::regex::icase};
     apply_shim(result, extract_expr, [](std::string& result, const boost::smatch& what) {
-      result.replace(what.position(), what.length(), "PG_EXTRACT('" + what[1] + "', " + what[2] + ")");
+      result.replace(what.position(),
+                     what.length(),
+                     "PG_EXTRACT('" + what[1] + "', " + what[2] + ")");
     });
   }
   {
-    boost::regex date_trunc_expr{R"(date_trunc\s*\(\s*(\w+)\s*,(.*)\))", boost::regex::extended | boost::regex::icase};
-    apply_shim(result, date_trunc_expr, [](std::string& result, const boost::smatch& what) {
-      result.replace(what.position(), what.length(), "PG_DATE_TRUNC('" + what[1] + "', " + what[2] + ")");
-    });
+    boost::regex date_trunc_expr{R"(date_trunc\s*\(\s*(\w+)\s*,(.*)\))",
+                                 boost::regex::extended | boost::regex::icase};
+    apply_shim(
+        result, date_trunc_expr, [](std::string& result, const boost::smatch& what) {
+          result.replace(what.position(),
+                         what.length(),
+                         "PG_DATE_TRUNC('" + what[1] + "', " + what[2] + ")");
+        });
   }
   {
-    boost::regex quant_expr{R"(\s(any|all)\s+([^(\s|;)]+))", boost::regex::extended | boost::regex::icase};
+    boost::regex quant_expr{R"(\s(any|all)\s+([^(\s|;)]+))",
+                            boost::regex::extended | boost::regex::icase};
     apply_shim(result, quant_expr, [](std::string& result, const boost::smatch& what) {
       std::string qual_name = what[1];
       std::string quant_fname{boost::iequals(qual_name, "any") ? "PG_ANY" : "PG_ALL"};
@@ -1223,16 +1395,84 @@ std::string pg_shim(const std::string& query) {
     });
   }
   {
-    boost::regex immediate_cast_expr{R"(TIMESTAMP\(0\)\s+('[^']+'))", boost::regex::extended | boost::regex::icase};
-    apply_shim(result, immediate_cast_expr, [](std::string& result, const boost::smatch& what) {
-      result.replace(what.position(), what.length(), "CAST(" + what[1] + " AS TIMESTAMP(0))");
-    });
+    boost::regex immediate_cast_expr{R"(TIMESTAMP\(([0369])\)\s+('[^']+'))",
+                                     boost::regex::extended | boost::regex::icase};
+    apply_shim(
+        result, immediate_cast_expr, [](std::string& result, const boost::smatch& what) {
+          result.replace(what.position(),
+                         what.length(),
+                         "CAST(" + what[2] + " AS TIMESTAMP(" + what[1] + "))");
+        });
   }
   {
-    boost::regex corr_expr{R"((\s+|,)(corr)\s*\()", boost::regex::extended | boost::regex::icase};
+    boost::regex timestampadd_expr{R"(TIMESTAMPADD\s*\(\s*(\w+)\s*,)",
+                                   boost::regex::extended | boost::regex::icase};
+    apply_shim(
+        result, timestampadd_expr, [](std::string& result, const boost::smatch& what) {
+          result.replace(what.position(), what.length(), "DATEADD('" + what[1] + "',");
+        });
+  }
+  {
+    boost::regex us_timestamp_cast_expr{
+        R"(CAST\s*\(\s*('[^']+')\s*AS\s*TIMESTAMP\(6\)\s*\))",
+        boost::regex::extended | boost::regex::icase};
+    apply_shim(result,
+               us_timestamp_cast_expr,
+               [](std::string& result, const boost::smatch& what) {
+                 result.replace(
+                     what.position(), what.length(), "usTIMESTAMP(" + what[1] + ")");
+               });
+  }
+  {
+    boost::regex ns_timestamp_cast_expr{
+        R"(CAST\s*\(\s*('[^']+')\s*AS\s*TIMESTAMP\(9\)\s*\))",
+        boost::regex::extended | boost::regex::icase};
+    apply_shim(result,
+               ns_timestamp_cast_expr,
+               [](std::string& result, const boost::smatch& what) {
+                 result.replace(
+                     what.position(), what.length(), "nsTIMESTAMP(" + what[1] + ")");
+               });
+  }
+  {
+    boost::regex corr_expr{R"((\s+|,|\()(corr)\s*\()",
+                           boost::regex::extended | boost::regex::icase};
     apply_shim(result, corr_expr, [](std::string& result, const boost::smatch& what) {
       result.replace(what.position(), what.length(), what[1] + "CORRELATION(");
     });
   }
+  {
+    try {
+      // the geography regex pattern is expensive and can sometimes run out of stack space
+      // on long queries. Treat it separately from the other shims.
+      boost::regex cast_to_geography_expr{
+          R"(CAST\s*\(\s*(((?!geography).)+)\s+AS\s+geography\s*\))",
+          boost::regex::perl | boost::regex::icase};
+      apply_shim(result,
+                 cast_to_geography_expr,
+                 [](std::string& result, const boost::smatch& what) {
+                   result.replace(what.position(),
+                                  what.length(),
+                                  "CastToGeography(" + what[1] + ")");
+                 });
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "Error apply geography cast shim: " << e.what()
+                   << "\nContinuing query parse...";
+    }
+  }
   return result;
+}
+
+}  // namespace
+
+std::string pg_shim(const std::string& query) {
+  try {
+    return pg_shim_impl(query);
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "Error applying shim: " << e.what() << "\nContinuing query parse...";
+    // boost::regex throws an exception about the complexity of matching when
+    // the wrong type of quotes are used or they're mismatched. Let the query
+    // through unmodified, the parser will throw a much more informative error.
+  }
+  return query;
 }

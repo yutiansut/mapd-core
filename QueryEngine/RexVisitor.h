@@ -88,6 +88,11 @@ class RexVisitor : public RexVisitorBase<T> {
       T operandResult = RexVisitorBase<T>::visit(operand);
       result = aggregateResult(result, operandResult);
     }
+    const auto rex_window_func_operator =
+        dynamic_cast<const RexWindowFunctionOperator*>(rex_operator);
+    if (rex_window_func_operator) {
+      return visitWindowFunctionOperator(rex_window_func_operator, result);
+    }
     return result;
   }
 
@@ -106,20 +111,41 @@ class RexVisitor : public RexVisitorBase<T> {
   }
 
  protected:
-  virtual T aggregateResult(const T& aggregate, const T& next_result) const { return next_result; }
+  virtual T aggregateResult(const T& aggregate, const T& next_result) const {
+    return next_result;
+  }
 
   T defaultResult() const override { return T{}; }
+
+ private:
+  T visitWindowFunctionOperator(const RexWindowFunctionOperator* rex_window_func_operator,
+                                const T operands_visit_result) const {
+    T result = operands_visit_result;
+    for (const auto& key : rex_window_func_operator->getPartitionKeys()) {
+      T partial_result = RexVisitorBase<T>::visit(key.get());
+      result = aggregateResult(result, partial_result);
+    }
+    for (const auto& key : rex_window_func_operator->getOrderKeys()) {
+      T partial_result = RexVisitorBase<T>::visit(key.get());
+      result = aggregateResult(result, partial_result);
+    }
+    return result;
+  }
 };
 
 class RexDeepCopyVisitor : public RexVisitorBase<std::unique_ptr<const RexScalar>> {
  protected:
-  typedef std::unique_ptr<const RexScalar> RetType;
+  using RetType = std::unique_ptr<const RexScalar>;
 
   RetType visitInput(const RexInput* input) const override { return input->deepCopy(); }
 
-  RetType visitLiteral(const RexLiteral* literal) const override { return literal->deepCopy(); }
+  RetType visitLiteral(const RexLiteral* literal) const override {
+    return literal->deepCopy();
+  }
 
-  RetType visitSubQuery(const RexSubQuery* subquery) const override { return subquery->deepCopy(); }
+  RetType visitSubQuery(const RexSubQuery* subquery) const override {
+    return subquery->deepCopy();
+  }
 
   RetType visitRef(const RexRef* ref) const override { return ref->deepCopy(); }
 
@@ -129,13 +155,33 @@ class RexDeepCopyVisitor : public RexVisitorBase<std::unique_ptr<const RexScalar
     for (size_t i = 0; i < operand_count; ++i) {
       new_opnds.push_back(visit(rex_operator->getOperand(i)));
     }
+    const auto rex_window_function_operator =
+        dynamic_cast<const RexWindowFunctionOperator*>(rex_operator);
+    if (rex_window_function_operator) {
+      const auto& partition_keys = rex_window_function_operator->getPartitionKeys();
+      std::vector<std::unique_ptr<const RexScalar>> disambiguated_partition_keys;
+      for (const auto& partition_key : partition_keys) {
+        disambiguated_partition_keys.emplace_back(visit(partition_key.get()));
+      }
+      std::vector<std::unique_ptr<const RexScalar>> disambiguated_order_keys;
+      const auto& order_keys = rex_window_function_operator->getOrderKeys();
+      for (const auto& order_key : order_keys) {
+        disambiguated_order_keys.emplace_back(visit(order_key.get()));
+      }
+      return rex_window_function_operator->disambiguatedOperands(
+          new_opnds,
+          disambiguated_partition_keys,
+          disambiguated_order_keys,
+          rex_window_function_operator->getCollation());
+    }
     return rex_operator->getDisambiguated(new_opnds);
   }
 
   RetType visitCase(const RexCase* rex_case) const override {
     std::vector<std::pair<RetType, RetType>> new_pair_list;
     for (size_t i = 0; i < rex_case->branchCount(); ++i) {
-      new_pair_list.emplace_back(visit(rex_case->getWhen(i)), visit(rex_case->getThen(i)));
+      new_pair_list.emplace_back(visit(rex_case->getWhen(i)),
+                                 visit(rex_case->getThen(i)));
     }
     auto new_else = visit(rex_case->getElse());
     return boost::make_unique<RexCase>(new_pair_list, new_else);
@@ -143,6 +189,29 @@ class RexDeepCopyVisitor : public RexVisitorBase<std::unique_ptr<const RexScalar
 
  private:
   RetType defaultResult() const override { return nullptr; }
+};
+
+template <bool bAllowMissing>
+class RexInputRenumber : public RexDeepCopyVisitor {
+ public:
+  RexInputRenumber(const std::unordered_map<size_t, size_t>& new_numbering)
+      : old_to_new_idx_(new_numbering) {}
+  RetType visitInput(const RexInput* input) const override {
+    auto renum_it = old_to_new_idx_.find(input->getIndex());
+    if (bAllowMissing) {
+      if (renum_it != old_to_new_idx_.end()) {
+        return boost::make_unique<RexInput>(input->getSourceNode(), renum_it->second);
+      } else {
+        return input->deepCopy();
+      }
+    } else {
+      CHECK(renum_it != old_to_new_idx_.end());
+      return boost::make_unique<RexInput>(input->getSourceNode(), renum_it->second);
+    }
+  }
+
+ private:
+  const std::unordered_map<size_t, size_t>& old_to_new_idx_;
 };
 
 #endif  // QUERYENGINE_REXVISITOR_H

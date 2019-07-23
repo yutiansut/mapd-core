@@ -16,16 +16,18 @@
 
 package org.apache.calcite.rel.externalize;
 
+import com.google.common.collect.ImmutableList;
+
+import org.apache.calcite.adapter.enumerable.EnumerableTableScan;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.logical.LogicalAggregate;
+import org.apache.calcite.rel.logical.LogicalTableModify;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.SqlExplainLevel;
 import org.apache.calcite.util.JsonBuilder;
 import org.apache.calcite.util.Pair;
-
-import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -42,11 +44,9 @@ public class MapDRelJsonWriter implements RelWriter {
 
   private final JsonBuilder jsonBuilder;
   private final MapDRelJson relJson;
-  private final Map<RelNode, String> relIdMap =
-      new IdentityHashMap<RelNode, String>();
+  private final Map<RelNode, String> relIdMap = new IdentityHashMap<RelNode, String>();
   private final List<Object> relList;
-  private final List<Pair<String, Object>> values =
-      new ArrayList<Pair<String, Object>>();
+  private final List<Pair<String, Object>> values = new ArrayList<Pair<String, Object>>();
   private String previousId;
 
   //~ Constructors -------------------------------------------------------------
@@ -64,14 +64,18 @@ public class MapDRelJsonWriter implements RelWriter {
 
     map.put("id", null); // ensure that id is the first attribute
     map.put("relOp", relJson.classToTypeName(rel.getClass()));
-    if (rel instanceof LogicalTableScan) {
-      RelDataType row_type = ((LogicalTableScan) rel).getTable().getRowType();
+    if (rel instanceof EnumerableTableScan) {
+      RelDataType row_type = ((EnumerableTableScan) rel).getTable().getRowType();
       List<String> field_names = row_type.getFieldNames();
       map.put("fieldNames", field_names);
     }
     if (rel instanceof LogicalAggregate) {
       map.put("fields", rel.getRowType().getFieldNames());
     }
+    if (rel instanceof LogicalTableModify) {
+      // FIX-ME:  What goes here?
+    }
+
     for (Pair<String, Object> value : values) {
       if (value.right instanceof RelNode) {
         continue;
@@ -129,7 +133,7 @@ public class MapDRelJsonWriter implements RelWriter {
   private List<Object> getList(List<Pair<String, Object>> values, String tag) {
     for (Pair<String, Object> value : values) {
       if (value.left.equals(tag)) {
-        //noinspection unchecked
+        // noinspection unchecked
         return (List<Object>) value.right;
       }
     }
@@ -146,8 +150,7 @@ public class MapDRelJsonWriter implements RelWriter {
   }
 
   public RelWriter done(RelNode node) {
-    final List<Pair<String, Object>> valuesCopy =
-        ImmutableList.copyOf(values);
+    final List<Pair<String, Object>> valuesCopy = ImmutableList.copyOf(values);
     values.clear();
     explain_(node, valuesCopy);
     return this;

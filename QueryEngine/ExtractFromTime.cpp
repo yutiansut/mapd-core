@@ -15,138 +15,191 @@
  */
 
 #include "ExtractFromTime.h"
+#include "../Shared/funcannotations.h"
 
 #ifndef __CUDACC__
-#include <glog/logging.h>
+#include <cstdlib>  // abort()
 #endif
 
-extern "C" __attribute__((noinline))
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_hour(const time_t* tim_p) {
-  long days, rem;
-  const time_t lcltime = *tim_p;
-  days = ((long)lcltime) / SECSPERDAY - EPOCH_ADJUSTMENT_DAYS;
-  rem = ((long)lcltime) % SECSPERDAY;
+extern "C" NEVER_INLINE DEVICE int32_t extract_hour(const int64_t lcltime) {
+  int64_t days, rem;
+  days = lcltime / kSecsPerDay - kEpochAdjustedDays;
+  rem = lcltime % kSecsPerDay;
   if (rem < 0) {
-    rem += SECSPERDAY;
+    rem += kSecsPerDay;
     --days;
   }
-  return (int)(rem / SECSPERHOUR);
+  return static_cast<int32_t>(rem / kSecPerHour);
 }
 
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_minute(const time_t* tim_p) {
-  long days, rem;
-  const time_t lcltime = *tim_p;
-  days = ((long)lcltime) / SECSPERDAY - EPOCH_ADJUSTMENT_DAYS;
-  rem = ((long)lcltime) % SECSPERDAY;
+DEVICE int32_t extract_minute(const int64_t lcltime) {
+  int64_t days, rem;
+  days = lcltime / kSecsPerDay - kEpochAdjustedDays;
+  rem = lcltime % kSecsPerDay;
   if (rem < 0) {
-    rem += SECSPERDAY;
+    rem += kSecsPerDay;
     --days;
   }
-  rem %= SECSPERHOUR;
-  return (int)(rem / SECSPERMIN);
+  rem %= kSecPerHour;
+  return static_cast<int32_t>(rem / kSecsPerMin);
 }
 
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_second(const time_t* tim_p) {
-  const time_t lcltime = *tim_p;
-  return (int)((long)lcltime % SECSPERMIN);
+DEVICE int32_t extract_second(const int64_t lcltime) {
+  return static_cast<int32_t>(lcltime % kSecsPerMin);
 }
 
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_dow(const time_t* tim_p) {
-  long days, rem;
-  int weekday;
-  const time_t lcltime = *tim_p;
-  days = ((long)lcltime) / SECSPERDAY - EPOCH_ADJUSTMENT_DAYS;
-  rem = ((long)lcltime) % SECSPERDAY;
+DEVICE int64_t extract_millisecond(const int64_t lcltime) {
+  return lcltime % (kSecsPerMin * kMilliSecsPerSec);
+}
+
+DEVICE int64_t extract_microsecond(const int64_t lcltime) {
+  return lcltime % (kSecsPerMin * kMicroSecsPerSec);
+}
+
+DEVICE int64_t extract_nanosecond(const int64_t lcltime) {
+  return lcltime % (kSecsPerMin * kNanoSecsPerSec);
+}
+
+DEVICE int32_t extract_dow(const int64_t lcltime) {
+  int64_t days, rem;
+  int32_t weekday;
+  days = lcltime / kSecsPerDay - kEpochAdjustedDays;
+  rem = lcltime % kSecsPerDay;
   if (rem < 0) {
-    rem += SECSPERDAY;
+    rem += kSecsPerDay;
     --days;
   }
 
-  if ((weekday = ((ADJUSTED_EPOCH_WDAY + days) % DAYSPERWEEK)) < 0)
-    weekday += DAYSPERWEEK;
+  if ((weekday = ((kEpochAdjustedWDay + days) % kDaysPerWeek)) < 0) {
+    weekday += kDaysPerWeek;
+  }
   return weekday;
 }
 
-#ifdef __CUDACC__
-__device__
-#endif
-    int
-    extract_quarterday(const time_t* tim_p) {
-  long quarterdays;
-  const time_t lcltime = *tim_p;
-  quarterdays = ((long)lcltime) / SECSPERQUARTERDAY;
-  return (int)(quarterdays % 4) + 1;
+DEVICE int32_t extract_quarterday(const int64_t lcltime) {
+  int64_t quarterdays;
+  quarterdays = lcltime / kSecsPerQuarterDay;
+  return static_cast<int32_t>(quarterdays % 4) + 1;
 }
 
-#ifdef __CUDACC__
-__device__
-#endif
-    tm*
-    gmtime_r_newlib(const time_t* tim_p, tm* res) {
-  const int month_lengths[2][MONSPERYEAR] = {{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
-                                             {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}};
-  long days, rem;
-  const time_t lcltime = *tim_p;
-  int year, month, yearday, weekday;
-  int years400, years100, years4, remainingyears;
-  int yearleap;
-  const int* ip;
+DEVICE int32_t extract_month_fast(const int64_t lcltime) {
+  STATIC_QUAL const uint32_t cumulative_month_epoch_starts[kMonsPerYear] = {0,
+                                                                            2678400,
+                                                                            5270400,
+                                                                            7948800,
+                                                                            10540800,
+                                                                            13219200,
+                                                                            15897600,
+                                                                            18489600,
+                                                                            21168000,
+                                                                            23760000,
+                                                                            26438400,
+                                                                            29116800};
+  uint32_t seconds_march_1900 = lcltime + kEpochOffsetYear1900 - kSecsJanToMar1900;
+  uint32_t seconds_past_4year_period = seconds_march_1900 % kSecondsPer4YearCycle;
+  uint32_t year_seconds_past_4year_period =
+      (seconds_past_4year_period / kSecondsPerNonLeapYear) * kSecondsPerNonLeapYear;
+  if (seconds_past_4year_period >=
+      kSecondsPer4YearCycle - kUSecsPerDay) {  // if we are in Feb 29th
+    year_seconds_past_4year_period -= kSecondsPerNonLeapYear;
+  }
+  uint32_t seconds_past_march =
+      seconds_past_4year_period - year_seconds_past_4year_period;
+  uint32_t month =
+      seconds_past_march / (30 * kUSecsPerDay);  // Will make the correct month either be
+                                                 // the guessed month or month before
+  month = month <= 11 ? month : 11;
+  if (cumulative_month_epoch_starts[month] > seconds_past_march) {
+    month--;
+  }
+  return (month + 2) % 12 + 1;
+}
 
-  days = ((long)lcltime) / SECSPERDAY - EPOCH_ADJUSTMENT_DAYS;
-  rem = ((long)lcltime) % SECSPERDAY;
+DEVICE int32_t extract_quarter_fast(const int64_t lcltime) {
+  STATIC_QUAL const uint32_t cumulative_quarter_epoch_starts[4] = {
+      0, 7776000, 15638400, 23587200};
+  STATIC_QUAL const uint32_t cumulative_quarter_epoch_starts_leap_year[4] = {
+      0, 7862400, 15724800, 23673600};
+  uint32_t seconds_1900 = lcltime + kEpochOffsetYear1900;
+  uint32_t leap_years = (seconds_1900 - kSecsJanToMar1900) / kSecondsPer4YearCycle;
+  uint32_t year = (seconds_1900 - leap_years * kSecsPerDay) / kSecondsPerNonLeapYear;
+  uint32_t base_year_leap_years = (year - 1) / 4;
+  uint32_t base_year_seconds =
+      year * kSecondsPerNonLeapYear + base_year_leap_years * kUSecsPerDay;
+  bool is_leap_year = year % 4 == 0 && year != 0;
+  const uint32_t* quarter_offsets = is_leap_year
+                                        ? cumulative_quarter_epoch_starts_leap_year
+                                        : cumulative_quarter_epoch_starts;
+  uint32_t partial_year_seconds = seconds_1900 % base_year_seconds;
+  uint32_t quarter = partial_year_seconds / (90 * kUSecsPerDay);
+  quarter = quarter <= 3 ? quarter : 3;
+  if (quarter_offsets[quarter] > partial_year_seconds) {
+    quarter--;
+  }
+  return quarter + 1;
+}
+
+DEVICE int32_t extract_year_fast(const int64_t lcltime) {
+  const uint32_t seconds_1900 = lcltime + kEpochOffsetYear1900;
+  const uint32_t leap_years = (seconds_1900 - kSecsJanToMar1900) / kSecondsPer4YearCycle;
+  const uint32_t year =
+      (seconds_1900 - leap_years * kUSecsPerDay) / kSecondsPerNonLeapYear + 1900;
+  return year;
+}
+
+DEVICE tm gmtime_r_newlib(const int64_t lcltime, tm& res) {
+  const int32_t month_lengths[2][kMonsPerYear] = {
+      {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
+      {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}};
+  int64_t days, rem;
+  int32_t year, month, yearday, weekday;
+  int32_t years400, years100, years4, remainingyears;
+  int32_t yearleap;
+  const int32_t* ip;
+
+  days = lcltime / kSecsPerDay - kEpochAdjustedDays;
+  rem = lcltime % kSecsPerDay;
   if (rem < 0) {
-    rem += SECSPERDAY;
+    rem += kSecsPerDay;
     --days;
   }
 
   /* compute hour, min, and sec */
-  res->tm_hour = (int)(rem / SECSPERHOUR);
-  rem %= SECSPERHOUR;
-  res->tm_min = (int)(rem / SECSPERMIN);
-  res->tm_sec = (int)(rem % SECSPERMIN);
+  res.tm_hour = static_cast<int32_t>(rem / kSecPerHour);
+  rem %= kSecPerHour;
+  res.tm_min = static_cast<int32_t>(rem / kSecsPerMin);
+  res.tm_sec = static_cast<int32_t>(rem % kSecsPerMin);
 
   /* compute day of week */
-  if ((weekday = ((ADJUSTED_EPOCH_WDAY + days) % DAYSPERWEEK)) < 0)
-    weekday += DAYSPERWEEK;
-  res->tm_wday = weekday;
+  if ((weekday = ((kEpochAdjustedWDay + days) % kDaysPerWeek)) < 0) {
+    weekday += kDaysPerWeek;
+  }
+  res.tm_wday = weekday;
 
   /* compute year & day of year */
-  years400 = days / DAYS_PER_400_YEARS;
-  days -= years400 * DAYS_PER_400_YEARS;
+  years400 = static_cast<int32_t>(days / kDaysPer400Years);
+  days -= years400 * kDaysPer400Years;
   /* simplify by making the values positive */
   if (days < 0) {
-    days += DAYS_PER_400_YEARS;
+    days += kDaysPer400Years;
     --years400;
   }
 
-  years100 = days / DAYS_PER_100_YEARS;
-  if (years100 == 4) /* required for proper day of year calculation */
+  years100 = static_cast<int32_t>(days / kDaysPer100Years);
+  if (years100 == 4) { /* required for proper day of year calculation */
     --years100;
-  days -= years100 * DAYS_PER_100_YEARS;
-  years4 = days / DAYS_PER_4_YEARS;
-  days -= years4 * DAYS_PER_4_YEARS;
-  remainingyears = days / DAYS_PER_YEAR;
-  if (remainingyears == 4) /* required for proper day of year calculation */
+  }
+  days -= years100 * kDaysPer100Years;
+  years4 = days / kDaysPer4Years;
+  days -= years4 * kDaysPer4Years;
+  remainingyears = days / kDaysPerYear;
+  if (remainingyears == 4) { /* required for proper day of year calculation */
     --remainingyears;
-  days -= remainingyears * DAYS_PER_YEAR;
+  }
+  days -= remainingyears * kDaysPerYear;
 
-  year = ADJUSTED_EPOCH_YEAR + years400 * 400 + years100 * 100 + years4 * 4 + remainingyears;
+  year =
+      kEpochAdjustedYears + years400 * 400 + years100 * 100 + years4 * 4 + remainingyears;
 
   /* If remainingyears is zero, it means that the years were completely
    * "consumed" by modulo calculations by 400, 100 and 4, so the year is:
@@ -161,13 +214,13 @@ __device__
   yearleap = remainingyears == 0 && (years4 != 0 || years100 == 0);
 
   /* adjust back to 1st January */
-  yearday = days + DAYS_IN_JANUARY + DAYS_IN_FEBRUARY + yearleap;
-  if (yearday >= DAYS_PER_YEAR + yearleap) {
-    yearday -= DAYS_PER_YEAR + yearleap;
+  yearday = days + kDaysInJanuary + kDaysInFebruary + yearleap;
+  if (yearday >= kDaysPerYear + yearleap) {
+    yearday -= kDaysPerYear + yearleap;
     ++year;
   }
-  res->tm_yday = yearday;
-  res->tm_year = year - YEAR_BASE;
+  res.tm_yday = yearday;
+  res.tm_year = year - kYearBase;
 
   /* Because "days" is the number of days since 1st March, the additional leap
    * day (29th of February) is the last possible day, so it doesn't matter much
@@ -176,51 +229,71 @@ __device__
   month = 2;
   while (days >= ip[month]) {
     days -= ip[month];
-    if (++month >= MONSPERYEAR)
+    if (++month >= kMonsPerYear) {
       month = 0;
+    }
   }
-  res->tm_mon = month;
-  res->tm_mday = days + 1;
+  res.tm_mon = month;
+  res.tm_mday = days + 1;
 
-  res->tm_isdst = 0;
+  res.tm_isdst = 0;
 
-  return (res);
+  return res;
 }
 
 /*
  * @brief support the SQL EXTRACT function
  */
-extern "C" __attribute__((noinline))
-#ifdef __CUDACC__
-__device__
-#endif
-    int64_t
-    ExtractFromTime(ExtractField field, time_t timeval) {
-
+extern "C" NEVER_INLINE DEVICE int64_t ExtractFromTime(ExtractField field,
+                                                       const int64_t timeval) {
   // We have fast paths for the 5 fields below - do not need to do full gmtime
   switch (field) {
     case kEPOCH:
       return timeval;
     case kQUARTERDAY:
-      return extract_quarterday(&timeval);
+      return extract_quarterday(timeval);
     case kHOUR:
-      return extract_hour(&timeval);
+      return extract_hour(timeval);
     case kMINUTE:
-      return extract_minute(&timeval);
+      return extract_minute(timeval);
     case kSECOND:
-      return extract_second(&timeval);
+      return extract_second(timeval);
+    case kMILLISECOND:
+      return extract_millisecond(timeval);
+    case kMICROSECOND:
+      return extract_microsecond(timeval);
+    case kNANOSECOND:
+      return extract_nanosecond(timeval);
     case kDOW:
-      return extract_dow(&timeval);
+      return extract_dow(timeval);
     case kISODOW: {
-      int64_t dow = extract_dow(&timeval);
+      int64_t dow = extract_dow(timeval);
       return (dow == 0 ? 7 : dow);
+    }
+    case kMONTH: {
+      if (timeval >= 0L && timeval <= UINT32_MAX - kEpochOffsetYear1900) {
+        return extract_month_fast(timeval);
+      }
+      break;
+    }
+    case kQUARTER: {
+      if (timeval >= 0L && timeval <= UINT32_MAX - kEpochOffsetYear1900) {
+        return extract_quarter_fast(timeval);
+      }
+      break;
+    }
+    case kYEAR: {
+      if (timeval >= 0L && timeval <= UINT32_MAX - kEpochOffsetYear1900) {
+        return extract_year_fast(timeval);
+      }
+      break;
     }
     default:
       break;
   }
 
   tm tm_struct;
-  gmtime_r_newlib(&timeval, &tm_struct);
+  gmtime_r_newlib(timeval, tm_struct);
   switch (field) {
     case kYEAR:
       return 1900 + tm_struct.tm_year;
@@ -233,9 +306,9 @@ __device__
     case kDOY:
       return tm_struct.tm_yday + 1;
     case kWEEK: {
-      int64_t doy = tm_struct.tm_yday;          // numbered from 0
-      int64_t dow = extract_dow(&timeval) + 1;  // use Sunday 1 - Saturday 7
-      int64_t week = (doy / 7) + 1;
+      int32_t doy = tm_struct.tm_yday;         // numbered from 0
+      int32_t dow = extract_dow(timeval) + 1;  // use Sunday 1 - Saturday 7
+      int32_t week = (doy / 7) + 1;
       // now adjust for offset at start of year
       //      S M T W T F S
       // doy      0 1 2 3 4
@@ -257,12 +330,9 @@ __device__
   }
 }
 
-extern "C"
-#ifdef __CUDACC__
-    __device__
-#endif
-        int64_t
-        ExtractFromTimeNullable(ExtractField field, time_t timeval, const int64_t null_val) {
+extern "C" DEVICE int64_t ExtractFromTimeNullable(ExtractField field,
+                                                  const int64_t timeval,
+                                                  const int64_t null_val) {
   if (timeval == null_val) {
     return null_val;
   }

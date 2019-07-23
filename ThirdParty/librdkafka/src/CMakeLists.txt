@@ -104,16 +104,23 @@ if(WITH_SASL)
   target_link_libraries(rdkafka PUBLIC ${SASL_LIBRARIES})
 endif()
 
-install(
-    TARGETS rdkafka
-    EXPORT "${targets_export_name}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-)
+include(CheckLibraryExists)
+CHECK_LIBRARY_EXISTS(c clock_gettime "time.h" HAVE_CLOCK_GETTIME_C)
+CHECK_LIBRARY_EXISTS(rt clock_gettime "time.h" HAVE_CLOCK_GETTIME_RT)
+if ((NOT HAVE_CLOCK_GETTIME_C) AND HAVE_CLOCK_GETTIME_RT)
+  target_link_libraries(rdkafka PUBLIC rt)
+endif()
 
-install(
-    FILES "rdkafka.h"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/librdkafka"
-)
+# install(
+#     TARGETS rdkafka
+#     EXPORT "${targets_export_name}"
+#     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+#     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+#     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+#     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+# )
+#
+# install(
+#     FILES "rdkafka.h"
+#     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/librdkafka"
+# )

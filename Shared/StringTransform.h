@@ -17,13 +17,44 @@
 #ifndef SHARED_STRINGTRANSFORM_H
 #define SHARED_STRINGTRANSFORM_H
 
+#include "Logger.h"
+
 #include <algorithm>
-#include <string>
+#include <array>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/regex.hpp>
+#include <iomanip>
 #include <set>
-#include <glog/logging.h>
+#include <sstream>
+#include <string>
+
+void apply_shim(std::string& result,
+                const boost::regex& reg_expr,
+                const std::function<void(std::string&, const boost::smatch&)>& shim_fn);
+
+std::vector<std::pair<size_t, size_t>> find_string_literals(const std::string& query);
+
+// Replace passwords, keys, etc. in a sql query with 'XXXXXXXX'.
+std::string hide_sensitive_data_from_query(std::string const& query_str);
+
+ssize_t inside_string_literal(
+    const size_t start,
+    const size_t length,
+    const std::vector<std::pair<size_t, size_t>>& literal_positions);
+
+template <typename T>
+std::string to_string(T&& v) {
+  std::ostringstream oss;
+  oss << v;
+  return oss.str();
+}
+
+template <>
+std::string to_string(char const*&& v);
+
+template <>
+std::string to_string(std::string&& v);
 
 inline std::string to_upper(const std::string& str) {
   auto str_uc = str;
@@ -31,14 +62,12 @@ inline std::string to_upper(const std::string& str) {
   return str_uc;
 }
 
-std::vector<std::pair<size_t, size_t>> find_string_literals(const std::string& query);
+std::string generate_random_string(const size_t len);
 
-ssize_t inside_string_literal(const size_t start,
-                              const size_t length,
-                              const std::vector<std::pair<size_t, size_t>>& literal_positions);
+// split apart a string into a vector of substrings
+std::vector<std::string> split(const std::string& str, const std::string& delim);
 
-void apply_shim(std::string& result,
-                const boost::regex& reg_expr,
-                const std::function<void(std::string&, const boost::smatch&)>& shim_fn);
+// trim any whitespace from the left and right ends of a string
+std::string strip(const std::string& str);
 
 #endif  // SHARED_STRINGTRANSFORM_H

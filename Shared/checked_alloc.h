@@ -17,13 +17,24 @@
 #ifndef CHECKED_ALLOC_H
 #define CHECKED_ALLOC_H
 
+#define BOOST_STACKTRACE_GNU_SOURCE_NOT_REQUIRED 1
+
+#include <boost/stacktrace.hpp>
 #include <cstdlib>
+#include <ostream>
+#include <stdexcept>
 #include <string>
+#include "../Shared/types.h"
+#include "Shared/Logger.h"
 
 class OutOfHostMemory : public std::runtime_error {
  public:
   OutOfHostMemory(const size_t size)
-      : std::runtime_error("Failed to allocate " + std::to_string(size) + " bytes of memory") {}
+      : std::runtime_error("Failed to allocate " + std::to_string(size) +
+                           " bytes of memory") {
+    VLOG(1) << "Failed to allocate " << size << " bytes " << std::endl
+            << boost::stacktrace::stacktrace();
+  }
 };
 
 inline void* checked_malloc(const size_t size) {

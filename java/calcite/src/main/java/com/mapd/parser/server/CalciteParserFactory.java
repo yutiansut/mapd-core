@@ -13,15 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.mapd.parser.server;
 
-import java.util.Map;
-
 import com.mapd.calcite.parser.MapDParser;
+import com.mapd.common.SockTransportProperties;
+
 import org.apache.commons.pool.PoolableObjectFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Map;
 
 /**
  *
@@ -32,26 +33,34 @@ class CalciteParserFactory implements PoolableObjectFactory {
 
   private final String dataDir;
   private final Map<String, ExtensionFunction> extSigs;
+  private final int mapdPort;
+  private final SockTransportProperties socket_transport_properties;
 
-  public CalciteParserFactory(String dataDir, final Map<String, ExtensionFunction> extSigs) {
+  public CalciteParserFactory(String dataDir,
+          final Map<String, ExtensionFunction> extSigs,
+          int mapdPort,
+          SockTransportProperties skT) {
     this.dataDir = dataDir;
     this.extSigs = extSigs;
+    this.mapdPort = mapdPort;
+    this.socket_transport_properties = skT;
   }
 
   @Override
   public Object makeObject() throws Exception {
-    MapDParser obj = new MapDParser(dataDir, extSigs);
+    MapDParser obj =
+            new MapDParser(dataDir, extSigs, mapdPort, socket_transport_properties);
     return obj;
   }
 
   @Override
   public void destroyObject(Object obj) throws Exception {
-    //no need to do anything
+    // no need to do anything
   }
 
   @Override
   public boolean validateObject(Object obj) {
-    MapDParser mdp = (MapDParser)obj;
+    MapDParser mdp = (MapDParser) obj;
     if (mdp.getCallCount() < 1000) {
       return true;
     } else {
@@ -69,5 +78,4 @@ class CalciteParserFactory implements PoolableObjectFactory {
   public void passivateObject(Object obj) throws Exception {
     // nothing to currently do here
   }
-
 }

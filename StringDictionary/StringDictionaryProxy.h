@@ -17,12 +17,12 @@
 #ifndef STRINGDICTIONARY_STRINGDICTIONARYPROXY_H
 #define STRINGDICTIONARY_STRINGDICTIONARYPROXY_H
 
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include "../Shared/mapd_shared_mutex.h"
 #include "StringDictionary.h"
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <map>
 #include <string>
@@ -39,18 +39,26 @@ class StringDictionaryProxy {
   ssize_t getGeneration() const noexcept;
   int32_t getOrAddTransient(const std::string& str);
   int32_t getIdOfString(const std::string& str) const;
-  int32_t getIdOfStringNoGeneration(const std::string& str) const;  // disregard generation, only used by QueryRenderer
+  int32_t getIdOfStringNoGeneration(
+      const std::string& str) const;  // disregard generation, only used by QueryRenderer
   std::string getString(int32_t string_id) const;
   std::pair<char*, size_t> getStringBytes(int32_t string_id) const noexcept;
   size_t storageEntryCount() const;
   void updateGeneration(const ssize_t generation) noexcept;
 
-  std::vector<std::string> getLike(const std::string& pattern,
-                                   const bool icase,
-                                   const bool is_simple,
-                                   const char escape) const;
+  std::vector<int32_t> getLike(const std::string& pattern,
+                               const bool icase,
+                               const bool is_simple,
+                               const char escape) const;
 
-  std::vector<std::string> getRegexpLike(const std::string& pattern, const char escape) const;
+  std::vector<int32_t> getCompare(const std::string& pattern,
+                                  const std::string& comp_operator) const;
+
+  std::vector<int32_t> getRegexpLike(const std::string& pattern, const char escape) const;
+
+  const std::map<int32_t, std::string> getTransientMapping() const {
+    return transient_int_to_str_;
+  }
 
  private:
   std::shared_ptr<StringDictionary> string_dict_;

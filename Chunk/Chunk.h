@@ -24,11 +24,11 @@
 
 #include <list>
 #include <memory>
-#include "../Shared/sqltypes.h"
+#include "../Catalog/ColumnDescriptor.h"
 #include "../DataMgr/AbstractBuffer.h"
 #include "../DataMgr/ChunkMetadata.h"
 #include "../DataMgr/DataMgr.h"
-#include "../Catalog/ColumnDescriptor.h"
+#include "../Shared/sqltypes.h"
 #include "../Utils/ChunkIter.h"
 
 using Data_Namespace::AbstractBuffer;
@@ -44,23 +44,34 @@ namespace Chunk_NS {
 class Chunk {
  public:
   Chunk() : buffer(nullptr), index_buf(nullptr), column_desc(nullptr) {}
-  explicit Chunk(const ColumnDescriptor* td) : buffer(nullptr), index_buf(nullptr), column_desc(td) {}
+  explicit Chunk(const ColumnDescriptor* td)
+      : buffer(nullptr), index_buf(nullptr), column_desc(td) {}
   Chunk(AbstractBuffer* b, AbstractBuffer* ib, const ColumnDescriptor* td)
       : buffer(b), index_buf(ib), column_desc(td){};
   ~Chunk() { unpin_buffer(); }
   const ColumnDescriptor* get_column_desc() const { return column_desc; }
-  static void translateColumnDescriptorsToChunkVec(const std::list<const ColumnDescriptor*>& colDescs,
-                                                   std::vector<Chunk>& chunkVec) {
-    for (auto cd : colDescs)
-      chunkVec.push_back(Chunk(cd));
+  static void translateColumnDescriptorsToChunkVec(
+      const std::list<const ColumnDescriptor*>& colDescs,
+      std::vector<Chunk>& chunkVec) {
+    for (auto cd : colDescs) {
+      chunkVec.emplace_back(cd);
+    }
   }
   ChunkIter begin_iterator(const ChunkMetadata&, int start_idx = 0, int skip = 1) const;
   size_t getNumElemsForBytesInsertData(const DataBlockPtr& src_data,
                                        const size_t num_elems,
                                        const size_t start_idx,
-                                       const size_t byte_limit);
-  ChunkMetadata appendData(DataBlockPtr& srcData, const size_t numAppendElems, const size_t startIdx);
-  void createChunkBuffer(DataMgr* data_mgr, const ChunkKey& key, const MemoryLevel mem_level, const int deviceId = 0);
+                                       const size_t byte_limit,
+                                       const bool replicating = false);
+  ChunkMetadata appendData(DataBlockPtr& srcData,
+                           const size_t numAppendElems,
+                           const size_t startIdx,
+                           const bool replicating = false);
+  void createChunkBuffer(DataMgr* data_mgr,
+                         const ChunkKey& key,
+                         const MemoryLevel mem_level,
+                         const int deviceId = 0,
+                         const size_t page_size = 0);
   void getChunkBuffer(DataMgr* data_mgr,
                       const ChunkKey& key,
                       const MemoryLevel mem_level,
@@ -74,7 +85,10 @@ class Chunk {
                                          const int deviceId,
                                          const size_t num_bytes,
                                          const size_t num_elems);
-  bool isChunkOnDevice(DataMgr* data_mgr, const ChunkKey& key, const MemoryLevel mem_level, const int device_id);
+  bool isChunkOnDevice(DataMgr* data_mgr,
+                       const ChunkKey& key,
+                       const MemoryLevel mem_level,
+                       const int device_id);
 
   // protected:
   AbstractBuffer* get_buffer() const { return buffer; }
@@ -90,6 +104,6 @@ class Chunk {
   const ColumnDescriptor* column_desc;
   void unpin_buffer();
 };
-}
+}  // namespace Chunk_NS
 
 #endif  // _CHUNK_H_
